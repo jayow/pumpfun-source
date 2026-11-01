@@ -13,9 +13,20 @@ use std::io::{self, BufRead, Write};
 
 fn answer(line: &str) -> String {
     let f: Vec<&str> = line.split(',').collect();
+    let columns = match f[0] {
+        "user" => 5,
+        "global" => 3,
+        other => panic!("unknown target {other}"),
+    };
+    assert_eq!(f.len(), columns, "unexpected column count");
     let n = |i: usize| f[i].parse::<u64>().unwrap();
     let result = if f[0] == "global" {
-        global_accumulator(n(1) != 0, n(2))
+        let reads = match f[1] {
+            "0" => false,
+            "1" => true,
+            other => panic!("reads must be 0 or 1, got {other}"),
+        };
+        global_accumulator(reads, n(2))
     } else {
         let read = match f[1] {
             "ignored" => UserRead::Ignored,

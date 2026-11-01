@@ -15,7 +15,19 @@ use std::io::{self, BufRead, Write};
 
 fn answer(line: &str) -> String {
     let f: Vec<&str> = line.split(',').collect();
+    let columns = match f[0] {
+        "typed" => 7,
+        "scan" => 5,
+        "rewards" => 4,
+        other => panic!("unknown request {other}"),
+    };
+    assert_eq!(f.len(), columns, "unexpected column count");
     let n = |i: usize| f[i].parse::<u64>().unwrap();
+    let flag = |i: usize| match f[i] {
+        "0" => false,
+        "1" => true,
+        other => panic!("flag must be 0 or 1, got {other}"),
+    };
     match f[0] {
         "typed" => {
             let slot = match f[1] {
@@ -25,7 +37,7 @@ fn answer(line: &str) -> String {
                 "quote" => Slot::QuoteDistribute,
                 other => panic!("unknown slot {other}"),
             };
-            let stored = Stored { len: n(2), disc_ok: n(3) != 0, count: n(4), fields_ok: n(5) != 0, admitted: n(6) != 0 };
+            let stored = Stored { len: n(2), disc_ok: flag(3), count: n(4), fields_ok: flag(5), admitted: flag(6) };
             match typed_load(slot, stored) {
                 Answer::Pass => "pass".to_string(),
                 Answer::Error(code) => format!("error:{code}"),
@@ -33,7 +45,7 @@ fn answer(line: &str) -> String {
             }
         }
         "scan" => {
-            let stored = Stored { len: n(1), disc_ok: n(2) != 0, count: n(3), fields_ok: true, admitted: true };
+            let stored = Stored { len: n(1), disc_ok: flag(2), count: n(3), fields_ok: true, admitted: true };
             let first = match f[4] {
                 "-" => None,
                 row => Some(row.parse::<u64>().expect("first must be a row or -")),
@@ -44,7 +56,7 @@ fn answer(line: &str) -> String {
                 Scan::Error(code) => format!("error:{code}"),
             }
         }
-        "rewards" => match rewards_payment(n(1) != 0, n(2), n(3)) {
+        "rewards" => match rewards_payment(flag(1), n(2), n(3)) {
             Rewards::Pass => "pass".to_string(),
             Rewards::InvalidArgument => "argument".to_string(),
             Rewards::ExternalAccountLamportSpend => "spend".to_string(),
