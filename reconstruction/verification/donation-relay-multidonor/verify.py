@@ -120,6 +120,56 @@ def manifest(base: Path, root: Path, *, recursive: bool = True) -> tuple[dict[st
     return rows, sha(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode())
 
 
+def build_source_manifest(root: Path) -> tuple[dict[str, str], str]:
+    paths = [root / "Cargo.toml", root / "Cargo.lock"]
+    paths.extend(sorted((root / "programs/donation-relay").rglob("*")))
+    rows = {path.relative_to(root).as_posix(): file_sha(path)
+            for path in paths if path.is_file()}
+    return rows, sha(json.dumps(rows, sort_keys=True, separators=(",", ":")).encode())
+
+
+def validate_build(inputs: dict[str, Any], root: Path,
+                   candidate: Path) -> list[str]:
+    build = inputs.get("candidate_build")
+    receipt_hash = inputs.get("candidate_build_receipt_sha256")
+    if build is None and receipt_hash is None:
+        return []  # Original/original controls intentionally have no source build.
+    if not isinstance(build, dict) or not isinstance(receipt_hash, str):
+        return ["candidate_build"]
+    problems: list[str] = []
+    raw = (json.dumps(build, indent=2, sort_keys=True) + "\n").encode()
+    if sha(raw) != receipt_hash or build.get("schema") != "donation-relay-candidate-build-v1":
+        problems.append("candidate_build_receipt")
+    expected_candidate = {"sha256": file_sha(candidate), "bytes": candidate.stat().st_size}
+    if build.get("candidate") != expected_candidate:
+        problems.append("candidate_build_image")
+    source_rows, source_digest = build_source_manifest(root)
+    if build.get("source_files") != source_rows \
+            or build.get("source_manifest_sha256") != source_digest:
+        problems.append("candidate_build_sources")
+    builder = build.get("builder", {})
+    builder_path = root / str(builder.get("path", ""))
+    if not builder_path.is_file() or builder.get("sha256") != file_sha(builder_path):
+        problems.append("candidate_build_builder")
+    tools = build.get("toolchain")
+    if not isinstance(tools, dict) or not tools:
+        problems.append("candidate_build_toolchain")
+    else:
+        for name, row in tools.items():
+            path = Path(str(row.get("path", "")))
+            if not path.is_file() or row.get("sha256") != file_sha(path):
+                problems.append("candidate_build_tool:" + str(name))
+    command = build.get("command")
+    required = {"rustc", "--release", "--target", "sbpf-solana-solana",
+                "--locked", "--offline", "--manifest-path", "--lib", "--"}
+    if not isinstance(command, list) or not all(isinstance(item, str) for item in command) \
+            or not required.issubset(command) or not build.get("offline") or not build.get("locked"):
+        problems.append("candidate_build_command")
+    elif tools and command[0] != tools.get("rust/bin/cargo", {}).get("path"):
+        problems.append("candidate_build_cargo")
+    return problems
+
+
 def data(row: dict[str, Any] | None) -> bytes:
     return b"" if row is None else base64.b64decode(row.get("data_base64", ""))
 
@@ -354,6 +404,9 @@ def validate(report: dict[str, Any], root: Path, candidate: Path) -> list[str]:
     if not candidate.is_file() or inputs.get("candidate", {}).get("sha256") != file_sha(candidate) \
             or inputs.get("candidate", {}).get("bytes") != candidate.stat().st_size:
         problems.append("candidate")
+    elif inputs.get("candidate_build") is not None \
+            or inputs.get("candidate_build_receipt_sha256") is not None:
+        problems.extend(validate_build(inputs, root, candidate))
     source_rows, source_digest = manifest(root / "programs/donation-relay", root)
     if inputs.get("source_files") != source_rows or inputs.get("source_manifest_sha256") != source_digest:
         problems.append("source_provenance")

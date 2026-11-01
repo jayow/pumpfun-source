@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +61,47 @@ class GenuineReceiptTests(unittest.TestCase):
         changed = copy.deepcopy(self.report)
         changed["inputs"]["source_manifest_sha256"] = "f" * 64
         self.assertIn("source_provenance", verify.validate(changed, self.root, self.candidate))
+
+    def authenticated_build_report(self):
+        changed = copy.deepcopy(self.report)
+        source_files, source_digest = verify.build_source_manifest(self.root)
+        executable = Path(sys.executable).resolve()
+        builder = self.root / "reconstruction/verification/donation-relay-multidonor/build_candidate.py"
+        build = {
+            "schema": "donation-relay-candidate-build-v1",
+            "builder": {"path": builder.relative_to(self.root).as_posix(),
+                        "sha256": verify.file_sha(builder)},
+            "command": [str(executable), "rustc", "--release", "--target",
+                        "sbpf-solana-solana", "--locked", "--offline",
+                        "--manifest-path", "fixture", "--lib", "--"],
+            "offline": True,
+            "locked": True,
+            "source_files": source_files,
+            "source_manifest_sha256": source_digest,
+            "toolchain": {"rust/bin/cargo": {"path": str(executable),
+                                                "sha256": verify.file_sha(executable)}},
+            "tool_versions": {},
+            "unstripped": {"sha256": "1" * 64, "bytes": 1},
+            "candidate": {"sha256": verify.file_sha(self.candidate),
+                          "bytes": self.candidate.stat().st_size},
+        }
+        changed["inputs"]["candidate_build"] = build
+        changed["inputs"]["candidate_build_receipt_sha256"] = verify.sha(
+            (json.dumps(build, indent=2, sort_keys=True) + "\n").encode())
+        return changed
+
+    def test_authenticated_build_receipt_is_independently_accepted(self):
+        self.assertEqual(verify.validate(
+            self.authenticated_build_report(), self.root, self.candidate), [])
+
+    def test_corrupt_build_source_provenance_is_rejected(self):
+        changed = self.authenticated_build_report()
+        changed["inputs"]["candidate_build"]["source_manifest_sha256"] = "f" * 64
+        changed["inputs"]["candidate_build_receipt_sha256"] = verify.sha(
+            (json.dumps(changed["inputs"]["candidate_build"], indent=2,
+                        sort_keys=True) + "\n").encode())
+        self.assertIn("candidate_build_sources",
+                      verify.validate(changed, self.root, self.candidate))
 
     def test_missing_required_evidence_is_rejected(self):
         changed = copy.deepcopy(self.report)

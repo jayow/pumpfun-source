@@ -421,7 +421,8 @@ def run_case(name: str, original: Path, candidate: Path, token: Path, associated
     }
 
 
-def execute(root: Path, candidate: Path, output: Path) -> bool:
+def execute(root: Path, candidate: Path, output: Path,
+            build_receipt: Path | None = None) -> bool:
     original = root / "evidence/dependencies/donation_relay/deployed.so"
     token = root / "evidence/dependencies/spl_token/deployed.so"
     associated = root / "evidence/dependencies/associated_token/deployed.so"
@@ -434,10 +435,25 @@ def execute(root: Path, candidate: Path, output: Path) -> bool:
     if not candidate.is_file():
         raise SystemExit("candidate does not exist: " + str(candidate))
     sources, source_digest = source_manifest(root)
+    build: dict[str, Any] | None = None
+    build_receipt_sha256: str | None = None
+    if build_receipt is not None:
+        if not build_receipt.is_file():
+            raise SystemExit("build receipt does not exist: " + str(build_receipt))
+        try:
+            build = json.loads(build_receipt.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise SystemExit(f"invalid build receipt: {error}") from error
+        if build.get("schema") != "donation-relay-candidate-build-v1" \
+                or build.get("candidate") != {
+                    "sha256": file_sha(candidate), "bytes": candidate.stat().st_size}:
+            raise SystemExit("build receipt does not authenticate candidate")
+        build_receipt_sha256 = file_sha(build_receipt)
     publisher = PumpReport(
         output, root, candidate, __file__, overwrite=False,
         extra_inputs=[HERE / "fixture.py", *[path for path, _ in pins.values()],
-                      *[root / name for name in sources]],
+                      *[root / name for name in sources],
+                      *([build_receipt] if build_receipt is not None else [])],
     )
     images = {label: path.read_bytes() for label, (path, _expected) in pins.items()}
     images["candidate"] = candidate.read_bytes()
@@ -466,6 +482,8 @@ def execute(root: Path, candidate: Path, output: Path) -> bool:
             **{label: {"path": path.relative_to(root).as_posix(), "sha256": fixture.sha(images[label])}
                for label, (path, _expected) in pins.items()},
             "candidate": {"sha256": fixture.sha(images["candidate"]), "bytes": len(images["candidate"])},
+            "candidate_build": build,
+            "candidate_build_receipt_sha256": build_receipt_sha256,
             "source_manifest_sha256": source_digest,
             "source_files": source_files,
             "package_files": package_manifest(root),
@@ -521,9 +539,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument("--build-receipt", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    ok = execute(args.root.resolve(), args.candidate.resolve(), args.output.resolve())
+    ok = execute(args.root.resolve(), args.candidate.resolve(), args.output.resolve(),
+                 args.build_receipt.resolve() if args.build_receipt else None)
     raise SystemExit(0 if ok else 1)
 
 
