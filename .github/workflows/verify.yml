@@ -515,6 +515,8 @@ jobs:
           - suite: host-fragments
             commands: |
               python -B scripts/run_discovered_tests.py tests 'test_global_*_captured.py' --expect 2
+              python -B tests/test_claim_cashback_v2_admission_captured.py
+              python -B tests/test_create_admission_captured.py
               python -B tests/test_pump_amm_liquidity_captured.py
               python -B tests/test_pump_amm_caller_fixture_inputs.py
               python -B tests/test_pump_amm_collect_coin_creator_fee_captured.py
