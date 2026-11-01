@@ -92,7 +92,7 @@ def main():
   x=run(c,original);y=run(c,candidate) if a.candidate else None;match=all(x[k]==y[k] for k in ['error','before','after','events','inner','return']) if y else None
   rows.append({'case':c,'original':x,'candidate':y,'match':match})
   if match is False:bad.append(c['name'])
- report={'scope':'Signed synthetic local social claimv2 fixtures; not full byte identity.','original_sha256':hashlib.sha256(original).hexdigest(),'candidate_sha256':hashlib.sha256(candidate).hexdigest() if a.candidate else None,'cases':rows,'mismatches':bad}
+ report={'scope':'Signed synthetic local social claimv2 fixtures; not full byte identity.','original_sha256':hashlib.sha256(original).hexdigest(),'candidate_sha256':hashlib.sha256(candidate).hexdigest() if a.candidate else None,'case_count':len(rows),'cases':rows,'mismatches':bad}
  report_payload=(json.dumps(report,indent=2)+'\n').encode('utf-8');publisher.write(gzip.compress(report_payload,mtime=0) if a.output.suffix=='.gz' else report_payload);print('Cases',len(rows),'mismatches',bad)
  if bad:raise SystemExit(1)
 if __name__=='__main__':main()

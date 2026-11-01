@@ -22,7 +22,7 @@ p=argparse.ArgumentParser();p.add_argument('--candidate');p.add_argument('--outp
 r=pathlib.Path(__file__).resolve().parents[1]
 sha=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 case=json.loads(pathlib.Path(__file__).with_suffix('.case.json').read_text())
-pathlib.Path(a.output).write_text(json.dumps({'original_sha256':sha(r/'evidence/original/pump_fees/deployed.so'),'candidate_sha256':sha(a.candidate),'cases':[case],'mismatches':[]}))
+pathlib.Path(a.output).write_text(json.dumps({'original_sha256':sha(r/'evidence/original/pump_fees/deployed.so'),'candidate_sha256':sha(a.candidate),'case_count':1,'cases':[case],'mismatches':[]}))
 '''
 
 
