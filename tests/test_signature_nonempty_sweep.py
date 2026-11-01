@@ -9,9 +9,15 @@ all(results)``.
 Every tracked Python file under ``scripts``, ``reconstruction`` and ``tests`` is
 parsed, including the source of ``-c`` drivers held as string constants. A guard
 may sit in the same condition (``tx.signatures and all(...)``, ``not checks or
-not all(checks)``, ``len(results) == required and all(results)``) or in an
+not all(checks)``, ``len(results) > 0 and all(results)``) or in an
 earlier statement of the same block (``self.assertTrue(results)``). Docstrings
 are prose, not code, and are not parsed.
+
+This is a bounded conservative lint of explicit local verification bindings and
+pure boolean/length predicates, not a proof of arbitrary Python control flow,
+aliases or called functions. Unknown effects and overwritten bindings cannot
+supply a proof. Runtime signature verification and exact header counts remain
+separate admission checks.
 """
 import ast
 import subprocess
@@ -56,10 +62,19 @@ def results_source(node):
     return None
 
 
-def bound_vectors(tree):
-    """Names assigned from a signature result vector, mapped to their receiver."""
+def own_nodes(scope):
+    """Traverse one lexical scope; another function's names prove nothing here."""
+    yield scope
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        yield from own_nodes(child)
+
+
+def bound_vectors(scope):
+    """Retain signature taint even if a name is later overwritten."""
     bound = {}
-    for node in ast.walk(tree):
+    for node in own_nodes(scope):
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
         elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
@@ -67,85 +82,275 @@ def bound_vectors(tree):
         else:
             continue
         source = results_source(value)
-        if source is None:
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                bound[target.id] = source
+        if source is not None:
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    bound.setdefault(target.id, set()).add(source)
     return bound
 
 
-def truth_test(node, positive=True):
-    """The vector ``node`` truth-tests, or None when its polarity is wrong.
+_UNKNOWN = object()
+_EMPTY = ()
 
-    ``x`` and ``bool(x)`` assert a non-empty vector; ``not x`` asserts an empty
-    one. ``not x or not all(x)`` is still a guard, so the polarity the caller
-    needs is the one that makes the ``all`` unreachable.
+
+def empty_values(node, vectors, known=None):
+    """Conservatively evaluate a predicate with this signature vector empty.
+
+    Unknown values have both truth values. Only explicit booleans, numeric
+    comparisons and the documented pure builtins establish a proof. In
+    particular an unknown required length may be zero.
     """
-    negated = isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
-    if negated:
-        node = node.operand
-    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == 'bool' and len(node.args) == 1):
-        node = node.args[0]
-    if negated != (not positive):
-        return None
-    return node
+    known = {} if known is None else known
+    if isinstance(node, ast.Name) and node.id in known:
+        return {known[node.id]}
+    text = ast.unparse(node)
+    if text in vectors:
+        return {_EMPTY}
+    if isinstance(node, ast.Constant):
+        return {node.value} if isinstance(node.value, (type(None), bool, int, float, str, bytes)) else {_UNKNOWN}
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return {not value for value in empty_truth(node.operand, vectors, known)}
+    if isinstance(node, ast.BoolOp):
+        possible = {True} if isinstance(node.op, ast.And) else {False}
+        for child in node.values:
+            values = empty_truth(child, vectors, known)
+            possible = ({False} if False in possible else set()) | values if isinstance(node.op, ast.And) else ({True} if True in possible else set()) | values
+            # Do not evaluate later siblings on a definitely short-circuited path.
+            if possible == ({False} if isinstance(node.op, ast.And) else {True}):
+                break
+        return possible
+    if isinstance(node, ast.Compare):
+        values, outcomes = empty_values(node.left, vectors, known), {True}
+        for operator, right in zip(node.ops, node.comparators):
+            others = empty_values(right, vectors, known)
+            pair = set()
+            for left in values:
+                for value in others:
+                    if left is _UNKNOWN or value is _UNKNOWN:
+                        pair.update((False, True))
+                        continue
+                    try:
+                        if isinstance(operator, ast.Eq): answer = left == value
+                        elif isinstance(operator, ast.NotEq): answer = left != value
+                        elif isinstance(operator, ast.Gt): answer = left > value
+                        elif isinstance(operator, ast.GtE): answer = left >= value
+                        elif isinstance(operator, ast.Lt): answer = left < value
+                        elif isinstance(operator, ast.LtE): answer = left <= value
+                        elif isinstance(operator, ast.Is): answer = left is value
+                        elif isinstance(operator, ast.IsNot): answer = left is not value
+                        else: pair.update((False, True)); continue
+                        pair.add(answer)
+                    except TypeError:
+                        pair.update((False, True))
+            outcomes = {a and b for a in outcomes for b in pair}
+            values = others
+        return outcomes
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and len(node.args) == 1 and not node.keywords:
+        name, arg = node.func.id, node.args[0]
+        if name == 'bool': return empty_truth(arg, vectors, known)
+        if name == 'len':
+            return {0} if empty_values(arg, vectors, known) == {_EMPTY} else {_UNKNOWN}
+        if name == 'list' and empty_values(arg, vectors, known) == {_EMPTY}: return {_EMPTY}
+        if name == 'all' and (ast.unparse(arg) in vectors or empty_values(arg, vectors, known) == {_EMPTY}): return {True}
+    return {_UNKNOWN}
 
 
-def compares_length(node, vectors):
-    for inner in ast.walk(node):
-        if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
-                and inner.func.id == 'len' and inner.args
-                and ast.unparse(inner.args[0]) in vectors):
+def empty_truth(node, vectors, known=None):
+    values = empty_values(node, vectors, known)
+    return {b for value in values for b in ((False, True) if value is _UNKNOWN else (bool(value),))}
+
+
+def predicate_truth(expression, vectors):
+    """A conjunction's equalities can pin an otherwise unknown required count.
+
+    If len(results)==required must hold and results is empty, required must
+    be zero. An accompanying required>0 then rejects that empty case. No
+    assumptions are imported across OR branches or executable side effects.
+    """
+    def conjuncts(node):
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            return [part for child in node.values for part in conjuncts(child)]
+        return [node]
+    parts = conjuncts(expression)
+    known = {}
+    for _ in parts:
+        changed = False
+        for part in parts:
+            if not isinstance(part, ast.Compare) or not all(isinstance(op, ast.Eq) for op in part.ops):
+                continue
+            operands = [part.left, *part.comparators]
+            values = [empty_values(value, vectors, known) for value in operands]
+            constants = [next(iter(value)) for value in values if len(value) == 1 and _UNKNOWN not in value]
+            constants = [value for value in constants if isinstance(value, (int, float))]
+            if not constants:
+                continue
+            for operand in operands:
+                if isinstance(operand, ast.Name) and operand.id not in known and operand.id not in vectors:
+                    known[operand.id] = constants[0]
+                    changed = True
+        if not changed: break
+    return empty_truth(expression, vectors, known)
+
+
+def mentions_vector(node, vectors):
+    return any(ast.unparse(child) in vectors for child in ast.walk(node))
+
+
+def impure(node):
+    if isinstance(node, (ast.NamedExpr, ast.Await, ast.Yield, ast.YieldFrom)):
+        return True
+    if not isinstance(node, ast.Call):
+        return False
+    if (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in {'Transaction', 'VersionedTransaction'} and node.func.attr == 'from_bytes'):
+        return False
+    if (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == 'self' and node.func.attr in {'assertTrue', 'assertFalse'}):
+        return False
+    return not ((isinstance(node.func, ast.Name) and node.func.id in {'all', 'bool', 'len', 'list', 'bytes'})
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == 'verify_with_results'))
+
+
+def effects_before(expression, target):
+    """Call effects occur after their arguments; an enclosing call is later."""
+    effects = []
+    def visit(node):
+        if node is target:
             return True
+        for child in ast.iter_child_nodes(node):
+            if visit(child): return True
+        if impure(node): effects.append(node)
+        return False
+    visit(expression)
+    return effects
+
+
+def rejects_branch(statements):
+    """Prove a raise on every path; trailing unreachable raise is not proof."""
+    for statement in statements:
+        if isinstance(statement, ast.Raise):
+            return True
+        if isinstance(statement, (ast.Return, ast.Break, ast.Continue)):
+            return False
+        if isinstance(statement, ast.If):
+            if rejects_branch(statement.body) and rejects_branch(statement.orelse):
+                return True
+            if any(isinstance(child, (ast.Return, ast.Break, ast.Continue, ast.Yield, ast.YieldFrom))
+                   for child in ast.walk(statement)):
+                return False
+        elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith, ast.Match)):
+            return False
     return False
 
 
-def tests_vector(node, vectors, positive=True):
-    """True when ``node`` establishes that one of ``vectors`` is non-empty."""
-    tested = truth_test(node, positive)
-    if tested is None:
-        return False
-    text = ast.unparse(tested)
-    if any(text == vector or text == vector + '.signatures' for vector in vectors):
-        return True
-    return isinstance(tested, ast.Compare) and compares_length(tested, vectors)
+def explicit_vector_test(expression, vectors):
+    """The vector occurs outside all(); negating all() alone is not a guard."""
+    def visit(node):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'all':
+            return False
+        if ast.unparse(node) in vectors:
+            return True
+        return any(visit(child) for child in ast.iter_child_nodes(node))
+    return visit(expression)
 
 
 def condition_guard(node, child, vectors, parents):
-    """Walk from ``child`` up through enclosing conditions.
+    target = child
+    current = child
+    while parents.get(id(current)) is not None and not isinstance(parents[id(current)], ast.stmt):
+        current = parents[id(current)]
+    statement = parents.get(id(current))
+    if isinstance(statement, ast.Assert):
+        expression = statement.test
+    elif isinstance(statement, ast.If) and current is statement.test:
+        expression = statement.test
+    else:
+        # The nearest enclosing boolean expression is the local predicate.
+        expression = child
+        for parent in iter_parents(child, parents):
+            if isinstance(parent, ast.stmt): break
+            if isinstance(parent, ast.BoolOp): expression = parent
+    if not explicit_vector_test(expression, vectors) or effects_before(expression, target):
+        return False
+    result = predicate_truth(expression, vectors)
+    if isinstance(statement, ast.If) and expression is statement.test:
+        if rejects_branch(statement.body):
+            return result == {True}
+        if rejects_branch(statement.orelse):
+            return result == {False}
+    return result == {False}
 
-    ``x and all(x)`` guards on the positive test, ``not x or not all(x)`` on
-    the negated one.
-    """
-    while node is not None:
-        if isinstance(node, ast.BoolOp):
-            positive = isinstance(node.op, ast.And)
-            for sibling in node.values:
-                if sibling is not child and tests_vector(sibling, vectors, positive):
-                    return True
-        child, node = node, parents.get(id(node))
+
+def iter_parents(node, parents):
+    while id(node) in parents:
+        node = parents[id(node)]
+        yield node
+
+
+def writes(node, names):
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, (ast.Store, ast.Del)) and child.id in names:
+            return True
+        if isinstance(child, (ast.Attribute, ast.Subscript)) and isinstance(child.ctx, (ast.Store, ast.Del)):
+            if any(isinstance(part, ast.Name) and part.id in names for part in ast.walk(child.value)):
+                return True
     return False
 
 
+def most_recent_binding(node, name, parents, blocks):
+    """Return the current direct verification binding and stable receiver proof."""
+    current, intervening = node, []
+    while current is not None:
+        if id(current) in blocks:
+            block, index = blocks[id(current)]
+            for earlier in reversed(block[:index]):
+                if not writes(earlier, {name}):
+                    intervening.append(earlier)
+                    continue
+                if isinstance(earlier, (ast.Assign, ast.AnnAssign)):
+                    source = results_source(earlier.value)
+                    if source is None:
+                        return None, False
+                    receiver = ast.parse(source, mode='eval').body
+                    names = {part.id for part in ast.walk(receiver) if isinstance(part, ast.Name)}
+                    receiver_stable = isinstance(receiver, (ast.Name, ast.Attribute)) and not any(
+                        writes(stmt, names) or any(impure(part) for part in ast.walk(stmt))
+                        for stmt in intervening)
+                    # Do not certify a vector which a call or write could have
+                    # changed since verification, even if it is tested again.
+                    if any(writes(stmt, {name}) or any(impure(part) for part in ast.walk(stmt)) for stmt in intervening):
+                        return None, False
+                    return source, receiver_stable
+                return None, False
+        current = parents.get(id(current))
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            break
+    return None, False
+
+
 def statement_guard(node, vectors, parents, blocks):
-    """True when an earlier statement of the same block tested the vector."""
     while node is not None and not isinstance(node, ast.stmt):
         node = parents.get(id(node))
     if node is None or id(node) not in blocks:
         return False
     block, index = blocks[id(node)]
-    for earlier in block[:index]:
+    names = {child.id for text in vectors for child in ast.walk(ast.parse(text, mode='eval')) if isinstance(child, ast.Name)}
+    for earlier in reversed(block[:index]):
+        expression, polarity = None, False
         if isinstance(earlier, ast.Assert):
-            if tests_vector(earlier.test, vectors):
-                return True
+            expression = earlier.test
         elif isinstance(earlier, ast.Expr) and isinstance(earlier.value, ast.Call):
             call = earlier.value
             name = call.func.attr if isinstance(call.func, ast.Attribute) else None
-            if name == 'assertTrue' and call.args:
-                if tests_vector(call.args[0], vectors):
-                    return True
+            if name in {'assertTrue', 'assertFalse'} and call.args:
+                expression, polarity = call.args[0], name == 'assertFalse'
+        elif isinstance(earlier, ast.If) and rejects_branch(earlier.body):
+            expression, polarity = earlier.test, True
+        if expression is not None and explicit_vector_test(expression, vectors):
+            if not any(impure(n) for n in ast.walk(expression)) and predicate_truth(expression, vectors) == {polarity}:
+                return True
+        if writes(earlier, names) or any(impure(n) for n in ast.walk(earlier)):
+            break
     return False
 
 
@@ -168,17 +373,27 @@ def unsigned_gates(tree, location):
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
     blocks = statement_blocks(tree)
-    bound = bound_vectors(tree)
+    scopes = {}
     for node in ast.walk(tree):
         if (not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name)
                 or node.func.id != 'all' or len(node.args) != 1):
             continue
+        scope = next((p for p in iter_parents(node, parents) if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module))), tree)
+        if id(scope) not in scopes:
+            scopes[id(scope)] = bound_vectors(scope)
+        bound = scopes[id(scope)]
         argument = node.args[0]
         source = results_source(argument)
         if source is not None:
-            vectors = {ast.unparse(argument), source}
+            vectors = {ast.unparse(argument), source + '.signatures'}
         elif isinstance(argument, ast.Name) and argument.id in bound:
-            vectors = {argument.id, bound[argument.id]}
+            source, stable = most_recent_binding(node, argument.id, parents, blocks)
+            if source is None:
+                yield f'{location}{node.lineno}'
+                continue
+            vectors = {argument.id}
+            if stable:
+                vectors.add(source + '.signatures')
         else:
             continue
         if condition_guard(parents.get(id(node)), node, vectors, parents):
@@ -264,6 +479,72 @@ class SignatureGuardTests(unittest.TestCase):
         self.assertEqual(gates('checks = tx.verify_with_results()\n'
                                'assert not checks\n'
                                'assert all(checks)\n'), ['3'])
+
+    def test_rejects_resealed_polarity_length_and_reset_false_proofs(self):
+        unsafe = [
+            'assert not tx.signatures or all(tx.verify_with_results())',
+            'checks=tx.verify_with_results()\nassert len(checks)==0 and all(checks)',
+            'checks=tx.verify_with_results()\nassert checks\nchecks=[]\nassert all(checks)',
+            'checks=tx.verify_with_results()\nassert len(checks)>=0 and all(checks)',
+            'checks=tx.verify_with_results()\nassert len(checks)==required and all(checks)',
+            'checks=tx.verify_with_results()\nassert checks\nchecks.clear()\nassert all(checks)',
+            'assert tx.signatures\ntx.signatures=[]\nassert all(tx.verify_with_results())',
+            'if not all(tx.verify_with_results()):\n    raise ValueError',
+        ]
+        for source in unsafe:
+            with self.subTest(source=source):
+                self.assertTrue(list(unsigned_gates(ast.parse(source), '')))
+
+    def test_accepts_only_actual_positive_local_guards(self):
+        safe = [
+            'verified=bool(tx.signatures) and all(tx.verify_with_results())',
+            'checks=tx.verify_with_results()\nassert checks and all(checks)',
+            'checks=tx.verify_with_results()\nassert len(checks)>0 and all(checks)',
+            'checks=tx.verify_with_results()\nassert len(checks)==2 and all(checks)',
+            'checks=tx.verify_with_results()\nassert required>0 and len(checks)==required and all(checks)',
+            'checks=tx.verify_with_results()\nself.assertTrue(checks)\nassert all(checks)',
+            'checks=tx.verify_with_results()\nassert checks\nassert all(checks)',
+            'checks=tx.verify_with_results()\ndecoded=VersionedTransaction.from_bytes(raw)\nassert checks and all(checks)',
+        ]
+        for source in safe:
+            with self.subTest(source=source):
+                self.assertEqual(list(unsigned_gates(ast.parse(source), '')), [])
+        # Another function's local name must not taint an ordinary all().
+        source = ('def signed(tx):\n    checks=tx.verify_with_results()\n    assert checks and all(checks)\n'
+                  'def ordinary():\n    checks=[True]\n    return all(checks)')
+        self.assertEqual(list(unsigned_gates(ast.parse(source), '')), [])
+
+    def test_unreachable_raise_is_not_a_rejecting_branch(self):
+        for early in ('return True', 'continue', 'break'):
+            source = ('def gate(tx):\n    for _ in (1,):\n'
+                      '        if not tx.signatures or not all(tx.verify_with_results()):\n'
+                      f'            {early}\n            raise ValueError')
+            with self.subTest(exit=early):
+                self.assertTrue(list(unsigned_gates(ast.parse(source), '')))
+        source = ('if not tx.signatures or not all(tx.verify_with_results()):\n'
+                  '    if other:\n        return True\n    raise ValueError')
+        self.assertTrue(list(unsigned_gates(ast.parse(source), '')))
+
+    def test_literal_python_drivers_are_checked_without_execution(self):
+        source = "checks=tx.verify_with_results()\nassert len(checks)==0 and all(checks)"
+        wrapper = ast.parse('driver=' + repr(source) + '\nexec(driver)')
+        drivers = list(driver_sources(wrapper))
+        self.assertEqual(len(drivers), 1)
+        self.assertTrue(list(unsigned_gates(ast.parse(drivers[0][0]), 'driver:')))
+
+    def test_real_signed_and_stripped_vectors(self):
+        from solders.compute_budget import set_compute_unit_limit
+        from solders.hash import Hash
+        from solders.keypair import Keypair
+        from solders.transaction import Transaction
+        payer = Keypair.from_seed(bytes([29]) * 32)
+        signed = Transaction.new_signed_with_payer(
+            [set_compute_unit_limit(1_400_000)], payer.pubkey(), [payer], Hash.default())
+        stripped = Transaction.populate(signed.message, [])
+        self.assertTrue(signed.signatures and all(signed.verify_with_results()))
+        self.assertEqual(list(stripped.verify_with_results()), [])
+        self.assertTrue(all(stripped.verify_with_results()))
+        self.assertFalse(stripped.signatures and all(stripped.verify_with_results()))
 
     def test_the_guard_is_what_makes_an_empty_vector_false(self):
         class Stripped:
