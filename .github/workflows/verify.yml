@@ -519,6 +519,7 @@ jobs:
               python -B reconstruction/verification/mayhem-stateful-lifecycle/test_lifecycle.py
           - suite: host-fragments
             commands: |
+              python -B tests/test_extra_host_input_validation.py
               python -B tests/test_curve_walk_host_input_validation.py
               python -B tests/test_length_host_input_validation.py
               python -B scripts/run_discovered_tests.py tests 'test_global_*_captured.py' --expect 2
