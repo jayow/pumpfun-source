@@ -508,6 +508,7 @@ jobs:
               python -B reconstruction/verification/pump-admin-cto-stateful/test_lifecycle.py
               python -B reconstruction/verification/pump-admin-cto-stateful/test_receipts.py
               python -B reconstruction/verification/pump-cross-program-fee-lifecycle/test_lifecycle.py
+              python -B -m unittest discover -s reconstruction/verification/pump-amm-multi-lp -p 'test_*.py' -v
               python -B reconstruction/donation-relay/native-linux-v148-20261030/test_analyzer_isolation.py
               python -B reconstruction/verification/mayhem-dispatch-boundaries/test_inventory.py
               python -B reconstruction/verification/mayhem-dispatch-boundaries/test_producer.py
