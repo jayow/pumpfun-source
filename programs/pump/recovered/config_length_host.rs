@@ -2,7 +2,9 @@
 //! `tests/test_config_length_captured.py`. One request per line:
 //! `typed,slot,len,disc,count,fields,admitted`, `scan,len,disc,count,first` or
 //! `rewards,system_owned,len,amount`, where `slot` is
-//! `control|migrate|distribute|quote` and `first` is a row or `-`.
+//! `control|migrate|distribute|quote` and `first` is a row or `-`. Any other
+//! token is refused: `.ok()` would read a malformed column as "no row", and a
+//! catchall would run a different request than the one asked for.
 //! Answers: `pass`, `error:<code>`, `oom`, `found:<row>`, `missing`, `argument`
 //! or `spend`.
 #[path = "config_length.rs"]
@@ -20,7 +22,8 @@ fn answer(line: &str) -> String {
                 "control" => Slot::Control,
                 "migrate" => Slot::Migrate,
                 "distribute" => Slot::Distribute,
-                _ => Slot::QuoteDistribute,
+                "quote" => Slot::QuoteDistribute,
+                other => panic!("unknown slot {other}"),
             };
             let stored = Stored { len: n(2), disc_ok: n(3) != 0, count: n(4), fields_ok: n(5) != 0, admitted: n(6) != 0 };
             match typed_load(slot, stored) {
@@ -31,17 +34,22 @@ fn answer(line: &str) -> String {
         }
         "scan" => {
             let stored = Stored { len: n(1), disc_ok: n(2) != 0, count: n(3), fields_ok: true, admitted: true };
-            match control_scan(stored, f[4].parse::<u64>().ok()) {
+            let first = match f[4] {
+                "-" => None,
+                row => Some(row.parse::<u64>().expect("first must be a row or -")),
+            };
+            match control_scan(stored, first) {
                 Scan::Found(row) => format!("found:{row}"),
                 Scan::Missing => "missing".to_string(),
                 Scan::Error(code) => format!("error:{code}"),
             }
         }
-        _ => match rewards_payment(n(1) != 0, n(2), n(3)) {
+        "rewards" => match rewards_payment(n(1) != 0, n(2), n(3)) {
             Rewards::Pass => "pass".to_string(),
             Rewards::InvalidArgument => "argument".to_string(),
             Rewards::ExternalAccountLamportSpend => "spend".to_string(),
         },
+        other => panic!("unknown request {other}"),
     }
 }
 
