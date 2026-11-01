@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import difflib
+import hashlib
 import json
 from pathlib import Path
 import struct
@@ -22,6 +23,19 @@ from score_admission import report_destination
 
 
 SCHEMA = 'sbpf-stack-register-provenance-v1'
+SOURCE_FILES = (
+    'stack_register_provenance.py', 'sbpf_provenance.py', 'residual_analysis.py',
+    'control_flow.py', 'instruction_stream.py', 'elf_symbols.py', 'score.py',
+)
+
+
+def source_provenance():
+    root = Path(__file__).resolve().parent
+    rows = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in SOURCE_FILES}
+    digest = hashlib.sha256(json.dumps(
+        rows, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return {'files': rows, 'manifest_sha256': digest}
 
 
 def _selector(window, symbol):
@@ -238,6 +252,7 @@ def analyze_pair(original_path, candidate_path, original_selector, candidate_sel
                   'complete alias analysis, compiler allocation decision, bytecode equality, or runtime equivalence is claimed.'),
         'normalization': {'implementation': 'reconstruction/harness/score.py:normalize',
                           'policy': 'official scorer normalization is invoked unchanged by residual_analysis'},
+        'analyzer_source': source_provenance(),
         'inputs': {'original': public_image(original_image, ow),
                    'candidate': public_image(candidate_image, cw)},
         'score_receipts': receipts,

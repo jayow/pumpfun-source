@@ -69,6 +69,8 @@ class PairComparisonTests(unittest.TestCase):
         self.assertTrue(report['identity']['raw_equal'])
         self.assertEqual(report['heuristic_correspondences']['stack_frame_residuals']['count'], 0)
         self.assertEqual(report['exact_facts']['original']['stack_accesses']['counts'], {'proven': 1})
+        self.assertEqual(set(report['analyzer_source']['files']), set(paired.SOURCE_FILES))
+        self.assertRegex(report['analyzer_source']['manifest_sha256'], r'^[0-9a-f]{64}$')
 
     def test_expected_hashes_bind_both_elf_snapshots(self):
         with tempfile.TemporaryDirectory() as temporary:
