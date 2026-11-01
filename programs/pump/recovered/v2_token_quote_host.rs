@@ -100,7 +100,10 @@ fn case(line: &str) -> Case {
             "buyback_key" => BadSlot::BuybackKey,
             "curve_missing" => BadSlot::CurveMissing,
             "user_mint" => BadSlot::UserMint,
-            _ => BadSlot::None,
+            "none" => BadSlot::None,
+            // A catchall read a misspelt slot name as "no bad slot", so a case
+            // labelled as a wrong account ran the happy path on both sides.
+            other => panic!("unknown bad slot {other}"),
         },
     }
 }
