@@ -68,6 +68,8 @@ fn answer(line: &str) -> String {
             ("user", _) => r.user_read_only = true,
             ("user_volume_accumulator", "key") => r.accumulator.wrong_address = true,
             ("user_volume_accumulator", "readonly") => r.accumulator.read_only = true,
+            // Data and owner mutations cannot recreate a removed account.
+            ("user_volume_accumulator", _) if r.accumulator_load == AccumulatorLoad::Missing => {}
             // The owner is checked first; a later data fault does not hide it.
             ("user_volume_accumulator", "owner") => r.accumulator_load = AccumulatorLoad::WrongOwner,
             ("user_volume_accumulator", _) if r.accumulator_load == AccumulatorLoad::WrongOwner && kind != "missing" => {}
@@ -79,7 +81,8 @@ fn answer(line: &str) -> String {
             ("user_volume_accumulator", "trunc") => {} // keeps the data fault before it
             ("user_volume_accumulator", "missing") => r.accumulator_load = AccumulatorLoad::Missing,
             ("quote_mint", "key") => r.mint_wrong_address = true,
-            ("quote_mint", "short") => mint = MintState::Short,
+            ("quote_mint", "short") if mint != MintState::Missing => mint = MintState::Short,
+            ("quote_mint", "short") => {}
             ("quote_mint", "missing") => mint = MintState::Missing,
             ("quote_token_program", _) => r.token_program_wrong = true,
             ("associated_token_program", _) => r.associated_program_wrong = true,

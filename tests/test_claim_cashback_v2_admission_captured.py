@@ -269,6 +269,16 @@ class ClaimCashbackV2AdmissionCapturedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.harness.run(route, faults)
 
+    def test_missing_accounts_stay_missing_in_both_fault_orders(self):
+        cases = []
+        for kind in ('owner', 'short', 'disc', 'trunc'):
+            faults = ('user_volume_accumulator.missing', f'user_volume_accumulator.{kind}')
+            cases.extend((route, order) for route in ROUTES for order in (faults, faults[::-1]))
+        self.assertEqual(self.host_answers(cases), ['error:3012'] * len(cases))
+        for faults in (('quote_mint.missing', 'quote_mint.short'),
+                       ('quote_mint.short', 'quote_mint.missing')):
+            self.assertEqual(self.host_answers([('token', faults)]), ['error:6010'])
+
     def test_cases_reach_every_stop(self):
         answers = set(self.host_answers(single_cases()))
         self.assertEqual({a for a in answers if a.startswith('error:')},

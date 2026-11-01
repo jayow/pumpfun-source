@@ -298,6 +298,13 @@ class CreateAdmissionCapturedTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.harness.run(route, faults)
 
+    def test_missing_accounts_stay_missing_in_both_fault_orders(self):
+        cases = []
+        for kind in ('owner', 'short', 'disc', 'trunc'):
+            faults = ('global.missing', f'global.{kind}')
+            cases.extend(('create', order) for order in (faults, faults[::-1]))
+        self.assertEqual(self.host_answers(cases), ['error:3012'] * len(cases))
+
     def test_cases_reach_every_stop(self):
         answers = set(self.host_answers(single_cases()))
         self.assertEqual({a for a in answers if a.startswith('error:')},

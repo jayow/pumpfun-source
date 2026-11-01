@@ -26,6 +26,10 @@ fn new_account(a: &mut NewAccount, kind: &str) {
 }
 
 fn load(slot: &mut Load, kind: &str) {
+    // Data and owner mutations cannot recreate a removed account.
+    if *slot == Load::Missing {
+        return;
+    }
     // The owner is checked first; a later data fault does not hide it.
     match kind {
         "missing" => *slot = Load::Missing,
