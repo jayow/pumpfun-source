@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import json
 import struct
 import unittest
+from pathlib import Path
 
 import lifecycle
 import verify
@@ -38,6 +40,16 @@ class VerifierTests(unittest.TestCase):
 
     def test_valid_original_control(self):
         self.assertEqual(verify.verify(self.report, self.candidate), [])
+
+    def test_retained_qualification_summary_binds_report(self):
+        root = Path(__file__).resolve().parent / "qualification"
+        summary = json.loads((root / "summary.json").read_text())
+        self.assertEqual(lifecycle.file_sha(root / "report.json.gz"), summary["report_sha256"])
+        retained = verify.read(root / "report.json.gz")
+        self.assertEqual(retained["case_count"], summary["cases"])
+        self.assertEqual(retained["program_sha256"]["candidate"], summary["candidate_sha256"])
+        self.assertEqual(retained["candidate_build"]["receipt"]["source_manifest_sha256"],
+                         summary["candidate_source_manifest_sha256"])
 
     def test_signature_substitution(self):
         self.assert_refused(lambda report: report["cases"][0]["original"]["receipts"][0]
