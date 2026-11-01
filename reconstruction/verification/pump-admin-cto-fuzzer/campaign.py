@@ -14,6 +14,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+# Bind the bytes that were compiled before any local dependency can run.
+SELF_SHA256 = globals().get("__source_sha256__")
+if SELF_SHA256 is None:
+    SELF_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 _pfile = HERE / "corpus.py"
 if _pfile.is_symlink():
     raise ValueError("corpus source must not be a symlink")
@@ -26,7 +30,6 @@ exec(compile(_pbytes, str(_pfile), "exec", dont_inherit=True, optimize=0), P.__d
 C = P.source_module("case_model", HERE / "case_model.py")
 E = P.source_module("executor", HERE / "executor.py")
 R = P.source_module("reducer", HERE / "reducer.py")
-SELF_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 SCHEMA = "pump-admin-cto-fuzz-campaign-v2"
 PRODUCERS = (

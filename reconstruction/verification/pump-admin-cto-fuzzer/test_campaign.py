@@ -3,6 +3,7 @@ import json
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -104,6 +105,31 @@ class CampaignTests(unittest.TestCase):
             partials = P.find_partial_attempts(output)
             self.assertEqual(len(partials), 1)
             self.assertTrue((partials[0] / "rejected/0000.json").is_file())
+
+    def test_actual_compiled_self_bytes_are_bound_before_dependency_bootstrap(self):
+        with tempfile.TemporaryDirectory(dir=C.ROOT) as temp:
+            root = Path(temp)
+            for source in C.PRODUCERS:
+                target = root / source.relative_to(C.ROOT)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+            source = root / HERE.relative_to(C.ROOT) / "campaign.py"
+            compiled_sha = P.file_sha(source)
+            proxy = types.ModuleType("types")
+            proxy.__dict__.update(vars(types))
+            changed = []
+            def make_module(*args, **kwargs):
+                if not changed:
+                    source.write_bytes(source.read_bytes() + b"\n# changed during dependency bootstrap\n")
+                    changed.append(True)
+                return types.ModuleType(*args, **kwargs)
+            proxy.ModuleType = make_module
+            loaded = P.source_module("campaign", source, imports={"types": proxy})
+            self.assertTrue(changed)
+            self.assertEqual(loaded.SELF_SHA256, compiled_sha)
+            self.assertNotEqual(loaded.SELF_SHA256, P.file_sha(source))
+            with self.assertRaisesRegex(ValueError, "loaded producer source changed"):
+                loaded.require_loaded_sources()
 
 
 if __name__ == "__main__":

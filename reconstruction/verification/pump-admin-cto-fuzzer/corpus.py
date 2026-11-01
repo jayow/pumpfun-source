@@ -7,6 +7,7 @@ import fcntl
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -84,7 +85,15 @@ def _pairs(items):
 
 
 def read_json(path: Path):
-    return json.loads(regular_bytes(path), object_pairs_hook=_pairs)
+    def constant(value):
+        raise ValueError("nonfinite JSON constant: " + value)
+    def number(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("nonfinite JSON number")
+        return result
+    return json.loads(regular_bytes(path), object_pairs_hook=_pairs,
+                      parse_constant=constant, parse_float=number)
 
 
 def report_files_digest(root: Path) -> dict:

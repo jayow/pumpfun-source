@@ -129,5 +129,14 @@ class CorpusTests(unittest.TestCase):
                 C.verify_artifacts(output, hashlib.sha256(raw).hexdigest())
 
 
+    def test_json_rejects_nonfinite_constants_and_overflowed_numbers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "nonfinite.json"
+            for literal in ("NaN", "Infinity", "-Infinity", "1e999"):
+                path.write_text('{"value":' + literal + '}')
+                with self.subTest(literal=literal), self.assertRaisesRegex(ValueError, "nonfinite JSON"):
+                    C.read_json(path)
+
+
 if __name__ == "__main__":
     unittest.main()
