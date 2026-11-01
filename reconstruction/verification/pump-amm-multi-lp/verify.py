@@ -162,7 +162,7 @@ def verify(report: dict, candidate: Path) -> list[str]:
     problems: list[str] = []
     if report.get("schema") != "pump-amm-multi-lp-v1":
         problems.append("schema")
-    if report.get("upstream_commit") != "2b9914e2ae2d1342ab135a9860c68c1ca9b42084":
+    if report.get("upstream_commit") != "747aae62863ecb052069999be020a7f49943e6a0":
         problems.append("upstream_commit")
     expected_ids = {"pump_amm": str(lifecycle.AMM), "spl_token": str(lifecycle.TOKEN),
                     "spl_token_2022": str(lifecycle.TOKEN22), "associated_token": str(lifecycle.ATA)}

@@ -31,8 +31,8 @@ is never counted as an equivalent case.  PumpSwap's existing exact
 meaningful-ELF checkpoint is independent of this runtime evidence; this
 package does not change its bytecode completion percentage.
 
-The discovery audit was performed at upstream commit
-`2b9914e2ae2d1342ab135a9860c68c1ca9b42084`.  Relevant existing coverage:
+The discovery audit was refreshed at upstream commit
+`747aae62863ecb052069999be020a7f49943e6a0`.  Relevant existing coverage:
 
 - `scripts/pump_amm_create_differential.py`: real pool/LP/vault creation, one
   creator per reset fixture.
@@ -111,7 +111,7 @@ bounded to the fixed nine-case corpus.
 ## Qualification and limitation
 
 The retained report is `qualification/report.json.gz` (SHA-256
-`bf3c8506c7ad21c724053af5686056a643ac8d47fc24347c288e422cf5b48321`).
+`bd7f81de43c5c7c1461f23791b04dde1a757fa024570ffc1e3c9e7c7b30365a3`).
 It binds source manifest
 `da44d85497928a0e21d69c4162dfd6ad4d2caee1047bf9574073db4bb67addf1`
 to candidate

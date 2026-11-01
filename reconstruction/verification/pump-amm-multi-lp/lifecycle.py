@@ -722,7 +722,7 @@ def run_suite(candidate: Path, build_receipt: Path | None = None) -> dict:
     sources, source_digest = source_manifest()
     return {
         "schema": "pump-amm-multi-lp-v1",
-        "upstream_commit": "2b9914e2ae2d1342ab135a9860c68c1ca9b42084",
+        "upstream_commit": "747aae62863ecb052069999be020a7f49943e6a0",
         "program_ids": {"pump_amm": str(AMM), "spl_token": str(TOKEN),
                         "spl_token_2022": str(TOKEN22), "associated_token": str(ATA)},
         "program_sha256": program_hashes(candidate),

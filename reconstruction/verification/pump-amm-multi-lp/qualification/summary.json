@@ -1,8 +1,13 @@
 {
   "schema": "pump-amm-multi-lp-qualification-v1",
-  "upstream_commit": "2b9914e2ae2d1342ab135a9860c68c1ca9b42084",
+  "upstream_commit": "747aae62863ecb052069999be020a7f49943e6a0",
   "build_commit": "7b88e6e06dc5d2bf6ab1b0ef0e0b8486d6fac6b6",
-  "report_sha256": "bf3c8506c7ad21c724053af5686056a643ac8d47fc24347c288e422cf5b48321",
+  "report_sha256": "bd7f81de43c5c7c1461f23791b04dde1a757fa024570ffc1e3c9e7c7b30365a3",
+  "prior_report": {
+    "upstream_commit": "2b9914e2ae2d1342ab135a9860c68c1ca9b42084",
+    "path": "report-upstream-2b9914e2ae.json.gz",
+    "sha256": "bf3c8506c7ad21c724053af5686056a643ac8d47fc24347c288e422cf5b48321"
+  },
   "original_sha256": "6a7ad34596d83b4c435b32f458a56e718e9f82eb4ad38e4316616d15d24d8ff7",
   "candidate_sha256": "ebfac4444b969f9114e174acf485907fa541e1f862bc709d18b6d22407c711ed",
   "candidate_bytes": 1267920,
