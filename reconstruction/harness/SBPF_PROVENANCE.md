@@ -82,6 +82,7 @@ normalization and acceptance rules are not modified.
 The retained run compared captured Pump Main `0x22a10` (27,400 bytes) with the
 source-built candidate used by the deterministic Admin CTO fuzzer. Inputs:
 
+- final upstream synchronization: `67e06453c887c7690c336746ee8e26156bcd8775`;
 - original SHA-256: `7a19affaa2c6187e04a5fe0ea298cee81fa5eb8c24cfcc30d85f615e89f7b02d`;
 - candidate SHA-256: `54344822ddef0bd4b1f7b4e8a6c80e5aae7e7fb804c5c82c67e7ebff369e9229`;
 - report SHA-256: `7ab1ff86db35b89fd3b5f45fd350f70bf52c6e5fd9ddd22d29cd0a167cab7305`.
