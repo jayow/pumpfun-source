@@ -184,17 +184,30 @@ def _summary(analysis):
     }
 
 
-def actionable_locations(stack_residuals, liveness_differences, limit=50):
+def actionable_locations(stack_residuals, liveness_differences, starts, limit=50):
+    confidence_rank = {'high': 0, 'medium': 1, 'low': 2}
+    kind_rank = {'moved_frame_slot': 0, 'access_width_difference': 1,
+                 'alias_formation_difference': 2, 'access_certainty_difference': 3,
+                 'original_only_stack_operation': 4, 'candidate_only_stack_operation': 5}
     rows = []
-    for row in stack_residuals['rows']:
+    ranked = sorted(stack_residuals['rows'], key=lambda row: (
+        confidence_rank.get(row.get('confidence'), 3), kind_rank.get(row['kind'], 9),
+        row.get('original_instruction_offset', 1 << 63),
+        row.get('candidate_instruction_offset', 1 << 63)))
+    for row in ranked:
         if len(rows) >= limit:
             break
-        rows.append({key: value for key, value in row.items() if key in {
+        selected = {key: value for key, value in row.items() if key in {
             'kind', 'classification', 'confidence', 'original_block', 'candidate_block',
             'original_instruction_offset', 'candidate_instruction_offset',
             'original_stack_offset', 'candidate_stack_offset', 'delta',
             'original_width', 'candidate_width', 'original_alias_kind', 'candidate_alias_kind',
-        }})
+        }}
+        for side in ('original', 'candidate'):
+            offset = selected.get(side + '_instruction_offset')
+            if offset is not None:
+                selected[side + '_address'] = starts[side] + offset
+        rows.append(selected)
     if len(rows) < limit:
         for row in liveness_differences['rows'][:limit - len(rows)]:
             rows.append({'kind': 'block_liveness_difference',
@@ -251,7 +264,9 @@ def analyze_pair(original_path, candidate_path, original_selector, candidate_sel
             'stack_frame_residuals': stack_residuals,
             'liveness_differences': liveness_differences,
         },
-        'actionable_comparison_locations': actionable_locations(stack_residuals, liveness_differences),
+        'actionable_comparison_locations': actionable_locations(
+            stack_residuals, liveness_differences,
+            {'original': ow['start'], 'candidate': cw['start']}),
         'limitations': [
             'Potential and unknown accesses are never counted as proven stack accesses.',
             'Calls clobber r0-r5; a proven stack-pointer argument invalidates tracked stack memory.',

@@ -43,6 +43,9 @@ class PairComparisonTests(unittest.TestCase):
         self.assertEqual((moved['original_stack_offset'], moved['candidate_stack_offset']), (-8, -16))
         self.assertEqual(moved['classification'], 'heuristic_correspondence')
         self.assertEqual(report['register_state_summaries']['original']['derived_stack_accesses'], 1)
+        actionable = report['actionable_comparison_locations'][0]
+        self.assertEqual(actionable['kind'], 'moved_frame_slot')
+        self.assertEqual(actionable['original_address'], 0x1000 + moved['original_instruction_offset'])
 
     def test_access_width_difference_is_visible(self):
         prefix = instruction(0xbf, 2, 10) + instruction(0x07, 2, immediate=-16)

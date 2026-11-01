@@ -1,8 +1,10 @@
 """Synthetic correctness tests for conservative SBPF register/stack provenance."""
 import struct
 import unittest
+from pathlib import Path
 
 import sbpf_provenance as provenance
+import stack_access
 
 
 def instruction(opcode, dst=0, src=0, displacement=0, immediate=0):
@@ -180,6 +182,25 @@ class UnknownAndLivenessTests(unittest.TestCase):
         self.assertEqual(report['stack_accesses']['proven'], [])
         self.assertEqual(report['stack_accesses']['potential'], [])
         self.assertEqual(len(report['stack_accesses']['unknown']), 1)
+
+
+class CapturedAdminCtoTests(unittest.TestCase):
+    def test_proven_direct_inventory_exactly_preserves_maintained_tool(self):
+        root = Path(__file__).resolve().parents[2]
+        raw, identity = stack_access.read_range(
+            root / 'evidence/original/pump/deployed.so', 0x22a10, 27_400)
+        legacy = stack_access.accesses(raw)['accesses']
+        report = provenance.analyze(raw, 0x22a10)
+        proven = [row for row in report['stack_accesses']['proven']
+                  if row['alias_kind'] == 'direct']
+        self.assertEqual(identity['sha256'],
+                         '7a19affaa2c6187e04a5fe0ea298cee81fa5eb8c24cfcc30d85f615e89f7b02d')
+        self.assertEqual(
+            [(row['instruction_offset'], row['offset'], row['width'], row['kind']) for row in legacy],
+            [(row['instruction_offset'], row['stack_offset'], row['width'], row['kind']) for row in proven])
+        self.assertGreater(len(report['stack_pointer_aliases']), 400)
+        self.assertGreater(len(report['pointer_escapes']), 100)
+        self.assertGreater(len(report['suspected_spill_reload_patterns']), 20)
 
 
 if __name__ == '__main__':
