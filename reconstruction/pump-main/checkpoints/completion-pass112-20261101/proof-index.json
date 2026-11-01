@@ -45,7 +45,11 @@
       "recorded_path": "/Users/shawwalters/.codex/artifacts/pumpfun-pr-pass112-20261101/root/main-source-probe/optimized/probe.o",
       "path": "source-probe/optimized/probe.o",
       "sha256": "2f95b45cfd18a25e73d36ba87ce05649c71be357d61ccca071ff9e64420b52e1"
-    },
+    }
+  ],
+  "historical_proof_reference": "../completion-pass111-20261101/cto-source-qualification.json",
+  "historical_reference_scope": "Prior pinned Pubkey/Option proof remains historical; new storage pattern is independently qualified.",
+  "external_primary_source_pins": [
     {
       "recorded_path": "/Users/shawwalters/.codex/artifacts/pumpfun-pr-pass112-20261101/root/main-source-probe/solana-program-2.2.1-program.rs",
       "path": "source-probe/solana-program-2.2.1-program.rs",
@@ -77,6 +81,5 @@
       "sha256": "b343fff3c2c17f7b3e556aadaa4d648c79e439269e23a92be53db210cf906187"
     }
   ],
-  "historical_proof_reference": "../completion-pass111-20261101/cto-source-qualification.json",
-  "historical_reference_scope": "Prior pinned Pubkey/Option proof remains historical; new storage pattern is independently qualified."
+  "external_primary_source_scope": "Primary dependency source bodies remain in the complete local review artifact. Their exact hashes and selected upstream crate/SDK locations are recorded in source-peer-review.json; this checkpoint does not vendor those libraries."
 }
