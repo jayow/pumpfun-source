@@ -52,9 +52,20 @@ fn answer(line: &str) -> String {
     let f: Vec<&str> = line.split(',').collect();
     let n = |i: usize| f[i].parse::<u64>().unwrap();
     let s = Sweep {
-        bucket: if f[0] == "creator" { Bucket::Creator } else { Bucket::Protocol },
+        // Each of these columns has a closed set of documented tokens. The
+        // catchalls used to read anything else as a real value, so a misspelt
+        // or shifted column silently selected a different case.
+        bucket: match f[0] {
+            "protocol" => Bucket::Protocol,
+            "creator" => Bucket::Creator,
+            other => panic!("unknown bucket {other}"),
+        },
         mayhem: n(1) != 0,
-        quote_mint: if f[2] == "quote" { QuoteMint::CurveQuote } else { QuoteMint::Other },
+        quote_mint: match f[2] {
+            "quote" => QuoteMint::CurveQuote,
+            "other" => QuoteMint::Other,
+            other => panic!("unknown quote mint {other}"),
+        },
         creator_fee: n(3),
         protocol_fees: n(4),
         curve_lamports: n(5),
@@ -72,24 +83,28 @@ fn answer(line: &str) -> String {
         token_program: match f[8] {
             "t22" => TokenProgram::Token2022,
             "spl" => TokenProgram::Spl,
-            _ => TokenProgram::Other,
+            "other" => TokenProgram::Other,
+            other => panic!("unknown token program {other}"),
         },
         mint: Mint {
             owner: match f[9] {
                 "t22" => MintOwner::Token2022,
                 "spl" => MintOwner::Spl,
-                _ => MintOwner::Other,
+                "other" => MintOwner::Other,
+                other => panic!("unknown mint owner {other}"),
             },
             fee: fee(f[10]),
             hook: match f[12] {
                 "none" => Hook::None,
                 "unset" => Hook::Unset,
-                _ => Hook::Set,
+                "set" => Hook::Set,
+                other => panic!("unknown hook {other}"),
             },
             pausable: match f[13] {
                 "none" => Pausable::None,
                 "running" => Pausable::Running,
-                _ => Pausable::Paused,
+                "paused" => Pausable::Paused,
+                other => panic!("unknown pausable {other}"),
             },
             non_transferable: n(14) != 0,
             default_frozen: n(15) != 0,
