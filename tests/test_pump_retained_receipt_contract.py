@@ -17,6 +17,12 @@ KEYS = ['error', 'before_accounts', 'after_accounts', 'rollback', 'event_payload
         'signature_verification', 'blockhash', 'sigverify_enabled', 'blockhash_check_enabled']
 
 
+# pump_fee_sweep_differential.py replays 504 cases and takes ~212 s alone on an
+# idle AMD EPYC 9354P, longer while sibling suites share the CPU; 180 s timed it
+# out on every run. Keep a bound so a hung suite still fails.
+SUITE_TIMEOUT = 600
+
+
 class CapturedAdministrativeReceiptContract(unittest.TestCase):
     """Exercise admission with the real producer and retained local program."""
 
@@ -90,7 +96,7 @@ class CapturedExtendedReceiptContract(unittest.TestCase):
             command = base.suite_command(name, root / 'scripts' / filename, cls.artifact,
                                          output, root / 'programs/pump', None)
             subprocess.run(command, cwd=root, capture_output=True, text=True,
-                           check=True, timeout=180)
+                           check=True, timeout=SUITE_TIMEOUT)
             raw = output.read_bytes()
             return name, json.loads(gzip.decompress(raw) if raw.startswith(b'\x1f\x8b') else raw)
         with ThreadPoolExecutor(max_workers=5) as pool:
