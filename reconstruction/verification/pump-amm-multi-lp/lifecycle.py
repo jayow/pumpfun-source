@@ -678,7 +678,27 @@ def program_hashes(candidate: Path) -> dict:
             **{name: file_sha(path) for name, path in CAPTURED.items() if name != "original"}}
 
 
-def run_suite(candidate: Path) -> dict:
+def build_provenance(candidate: Path, receipt_path: Path | None) -> dict:
+    if receipt_path is None:
+        if file_sha(candidate) != file_sha(CAPTURED["original"]):
+            raise ValueError("a non-original candidate requires --build-receipt")
+        return {"kind": "original_control"}
+    receipt = json.loads(receipt_path.read_text())
+    sources, source_digest = source_manifest()
+    if (receipt.get("schema") != "pump-amm-multi-lp-build-v1"
+            or receipt.get("returncode") != 0 or not receipt.get("source_unchanged")
+            or receipt.get("artifact_sha256") != file_sha(candidate)
+            or receipt.get("source_sha256") != sources
+            or receipt.get("source_after_sha256") != sources
+            or receipt.get("source_manifest_sha256") != source_digest
+            or receipt.get("source_after_manifest_sha256") != source_digest
+            or receipt.get("compiler_jobs") != 2 or receipt.get("toolchain") != "v1.44"):
+        raise ValueError("candidate build receipt does not bind current source and artifact")
+    return {"kind": "source_build", "receipt": receipt,
+            "receipt_canonical_sha256": canonical_hash(receipt)}
+
+
+def run_suite(candidate: Path, build_receipt: Path | None = None) -> dict:
     cases = []
     for index, plan in enumerate(plans()):
         row = run_plan(candidate, plan, index)
@@ -706,6 +726,7 @@ def run_suite(candidate: Path) -> dict:
         "program_ids": {"pump_amm": str(AMM), "spl_token": str(TOKEN),
                         "spl_token_2022": str(TOKEN22), "associated_token": str(ATA)},
         "program_sha256": program_hashes(candidate),
+        "candidate_build": build_provenance(candidate, build_receipt),
         "producer_input_sha256": input_hashes(),
         "candidate_source_sha256": sources,
         "candidate_source_manifest_sha256": source_digest,
@@ -739,9 +760,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--build-receipt", type=Path,
+                        help="required for a non-original candidate")
     args = parser.parse_args()
     candidate = args.candidate.resolve()
-    report = run_suite(candidate)
+    report = run_suite(candidate, args.build_receipt.resolve() if args.build_receipt else None)
     write_report(args.output.resolve(), report)
     print(json.dumps({"cases": report["case_count"],
                       "transactions_per_image": report["transaction_count_per_image"],

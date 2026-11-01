@@ -176,6 +176,24 @@ def verify(report: dict, candidate: Path) -> list[str]:
     if (report.get("candidate_source_sha256") != sources
             or report.get("candidate_source_manifest_sha256") != source_digest):
         problems.append("candidate_source_manifest")
+    build = report.get("candidate_build")
+    if lifecycle.file_sha(candidate) == lifecycle.file_sha(lifecycle.CAPTURED["original"]):
+        if build != {"kind": "original_control"}:
+            problems.append("candidate_build_control")
+    elif not isinstance(build, dict) or build.get("kind") != "source_build":
+        problems.append("candidate_build_missing")
+    else:
+        receipt = build.get("receipt", {})
+        if (build.get("receipt_canonical_sha256") != lifecycle.canonical_hash(receipt)
+                or receipt.get("schema") != "pump-amm-multi-lp-build-v1"
+                or receipt.get("returncode") != 0 or not receipt.get("source_unchanged")
+                or receipt.get("artifact_sha256") != lifecycle.file_sha(candidate)
+                or receipt.get("source_sha256") != sources
+                or receipt.get("source_after_sha256") != sources
+                or receipt.get("source_manifest_sha256") != source_digest
+                or receipt.get("source_after_manifest_sha256") != source_digest
+                or receipt.get("compiler_jobs") != 2 or receipt.get("toolchain") != "v1.44"):
+            problems.append("candidate_build_receipt")
 
     planned = lifecycle.plans()
     rows = report.get("cases", [])
@@ -311,13 +329,15 @@ def main() -> int:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--replay", action="store_true")
+    parser.add_argument("--build-receipt", type=Path,
+                        help="receipt to use for deterministic replay of a source candidate")
     args = parser.parse_args()
     report = read(args.report)
     candidate = args.candidate.resolve()
     problems = verify(report, candidate)
     replay_equal = None
     if args.replay and not problems:
-        replay_equal = lifecycle.run_suite(candidate) == report
+        replay_equal = lifecycle.run_suite(candidate, args.build_receipt) == report
         if not replay_equal:
             problems.append("deterministic_replay")
     print(json.dumps({"verified": not problems, "problems": problems,
