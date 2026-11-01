@@ -4,11 +4,89 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
+import importlib.util
+import os
+import py_compile
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-import lifecycle
+import types
+HERE = Path(__file__).resolve().parent
+_admission = HERE / "admission.py"
+_raw = _admission.read_bytes()
+A = types.ModuleType("_lp_test_admission")
+A.__file__ = str(_admission)
+A.__source_sha256__ = __import__("hashlib").sha256(_raw).hexdigest()
+exec(compile(_raw, str(_admission), "exec"), A.__dict__)
+lifecycle = A.source_module("lifecycle", HERE / "lifecycle.py", bindings={"_ADMISSION": A})
+
+
+class AdmissionTests(unittest.TestCase):
+    def test_executable_timestamp_cache_is_ignored_and_namespaces_stay_private(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "local_helper.py"
+            clean = b"MARKER = 'source'\n"
+            cached = b"MARKER = 'cached'\n"
+            self.assertEqual(len(clean), len(cached))
+            path.write_bytes(cached)
+            timestamp = path.stat().st_mtime_ns
+            py_compile.compile(str(path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            path.write_bytes(clean)
+            os.utime(path, ns=(timestamp, timestamp))
+            spec = importlib.util.spec_from_file_location("_lp_actual_cache_control", path)
+            ordinary = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ordinary)
+            self.assertEqual(ordinary.MARKER, "cached")  # The cache really is executable.
+            helper = types.ModuleType("_lp_isolated_admission")
+            helper.__file__ = str(HERE / "admission.py")
+            exec(compile(_raw, helper.__file__, "exec"), helper.__dict__)
+            helper.ROOT, helper.LOADED = root, {}
+            prior = dict(sys.modules)
+            loaded = helper.source_module("local_helper", path)
+            self.assertEqual(loaded.MARKER, "source")
+            self.assertEqual(loaded.__source_sha256__, hashlib.sha256(clean).hexdigest())
+            self.assertNotIn(loaded.__name__, sys.modules)
+            self.assertTrue(all(sys.modules.get(name) is module for name, module in prior.items()))
+
+    def test_direct_entrypoint_pins_self_before_local_dependency_bootstrap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for rel in A.snapshot_inputs():
+                target = root / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(A.ROOT / rel, target)
+            package = root / HERE.relative_to(A.ROOT)
+            admission = package / "admission.py"
+            admission.write_bytes(admission.read_bytes() + b"\n_target = HERE / 'lifecycle.py'\n_target.write_bytes(_target.read_bytes() + b'\\n# bootstrap changed source\\n')\n")
+            entrypoint = package / "lifecycle.py"
+            code = ("import runpy; from pathlib import Path; "
+                    f"loaded=runpy.run_path({str(entrypoint)!r}); "
+                    "loaded['run_suite'](Path('unused-candidate'))")
+            result = subprocess.run([sys.executable, "-I", "-B", "-c", code],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("executed source/data differs", result.stderr)
+
+    def test_strict_json_and_symlink_inputs_are_refused(self):
+        for raw in (b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":1e999}'):
+            with self.assertRaises(ValueError):
+                A.json_bytes(raw)
+        self.assertFalse(A.same_json({"flag": True}, {"flag": 1}))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "source.py"
+            target.write_text("pass\n")
+            link = root / "link.py"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                A.regular_bytes(link, root=root)
 
 
 class FixtureTests(unittest.TestCase):
@@ -55,8 +133,9 @@ class ExecutionTests(unittest.TestCase):
             for receipt in row["original"]["receipts"]:
                 transaction = lifecycle.Transaction.from_bytes(
                     base64.b64decode(receipt["transaction_base64"], validate=True))
-                self.assertTrue(all(transaction.verify_with_results()))
                 required = transaction.message.header.num_required_signatures
+                self.assertTrue(transaction.signatures and all(transaction.verify_with_results()))
+                self.assertEqual(len(transaction.signatures), required)
                 signers = list(transaction.message.account_keys[:required])
                 self.assertEqual(signers[0], lifecycle.FEE_PAYER.pubkey())
                 self.assertNotIn(row["fixture"]["pool"], receipt["signer_pubkeys"])
@@ -107,6 +186,72 @@ class ExecutionTests(unittest.TestCase):
 
     def test_deterministic_replay(self):
         self.assertEqual(self.report, lifecycle.run_suite(lifecycle.CAPTURED["original"]))
+
+    def test_first_prestate_is_exact_constructor_and_watch_set_never_grows(self):
+        for index, (plan, row) in enumerate(zip(lifecycle.plans(), self.report["cases"])):
+            harness = lifecycle.fixture_only(lifecycle.CAPTURED["original"], index, plan)
+            for side in ("original", "candidate"):
+                expected = harness.snapshot(side)
+                self.assertEqual(row[side]["receipts"][0]["before"], expected)
+                for receipt in row[side]["receipts"]:
+                    self.assertEqual(set(receipt["before"]), set(expected))
+                    self.assertEqual(set(receipt["after"]), set(expected))
+                for before, after in zip(row[side]["receipts"], row[side]["receipts"][1:]):
+                    self.assertEqual(before["after"], after["before"])
+
+    def test_canonical_plan_construction_never_sends_a_transaction(self):
+        from unittest import mock
+        with mock.patch.object(lifecycle.LiteSVM, "send_transaction", side_effect=AssertionError("no VM execution")):
+            for index, plan in enumerate(lifecycle.plans()):
+                harness = lifecycle.fixture_only(lifecycle.CAPTURED["original"], index, plan)
+                baseline = harness.snapshot("original")
+                for number, step in enumerate(plan["steps"]):
+                    name, instructions, signers, operation = lifecycle.plan_step(harness, step, number)
+                    self.assertTrue(name and instructions and operation)
+                    self.assertIn(lifecycle.FEE_PAYER.pubkey(), {pair.pubkey() for pair in signers})
+                    self.assertNotIn(harness.pool.pool, {pair.pubkey() for pair in signers})
+                    self.assertEqual(harness.snapshot("original"), baseline)
+
+    def test_existing_and_dangling_outputs_are_refused_before_running(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "report.json"
+            output.write_text("retain")
+            with mock.patch.object(lifecycle, "run_suite", side_effect=AssertionError("no execution")):
+                with self.assertRaises(FileExistsError):
+                    lifecycle.produce(Path("unused"), output)
+                output.unlink()
+                output.symlink_to(Path(temporary) / "missing.json")
+                with self.assertRaises(FileExistsError):
+                    lifecycle.produce(Path("unused"), output)
+
+    def test_runtime_suite_refuses_fabricated_build_receipts(self):
+        with self.assertRaisesRegex(ValueError, "does not authenticate"):
+            lifecycle.run_suite(Path("unused"), Path("invented-build-receipt.json"))
+
+    def test_image_mutation_is_refused_without_publishing(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "candidate.so"
+            raw = lifecycle.CAPTURED["original"].read_bytes()
+            candidate.write_bytes(raw)
+            saved = {case["case"]: case for case in self.report["cases"]}
+            def controlled_reuse(_candidate, plan, *args):
+                candidate.write_bytes(raw + b"mutation")
+                return copy.deepcopy(saved[plan["name"]])
+            output = Path(temporary) / "never-publish.json"
+            with mock.patch.object(lifecycle, "run_plan", side_effect=controlled_reuse):
+                with self.assertRaisesRegex(ValueError, "candidate changed"):
+                    lifecycle.produce(candidate, output)
+            self.assertFalse(output.exists())
+
+    def test_normal_python_required_before_loading_a_vm(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, "-O", "-B", str(HERE / "lifecycle.py"), "--help"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Normal Python is required", result.stderr)
 
     def test_exclusive_report_publication(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -17,8 +17,9 @@ keypairs.
 
 The same serialized, fully signed transactions are submitted to independent
 original and candidate VMs.  Reports retain transaction bytes, signatures,
-message/blockhash hashes, errors, events, inner instructions, return data,
-compute units, and complete watched account snapshots.  `verify.py` derives
+message/blockhash hashes, structured instruction errors, events, inner instructions,
+return data, compute units, and fixed watched account snapshots. Executable account
+data is represented by its length and hash; ordinary account bytes are retained.  `verify.py` derives
 case membership, transaction identities, signatures, accounting, rollback,
 and the differential result without trusting producer acceptance fields.
 
@@ -49,10 +50,10 @@ lifecycle package.
 
 ## Qualified lifecycle matrix
 
-The retained qualification executed 65 signed transactions against each image.
-The captured original had 62 successful and three deliberately rejected
-transactions.  All nine cases were `equal_observed_behavior`; there were no
-candidate mismatches, unsupported fixtures, or infrastructure failures.
+Each complete run executes 65 signed transactions against each image. The
+captured original has 62 successful and three deliberately rejected transactions.
+Only nine equal cases with no unsupported fixtures or infrastructure failures
+qualify the supplied candidate on this finite corpus.
 
 | case | captured result established |
 | --- | --- |
@@ -73,57 +74,67 @@ account bytes.  The trade case includes the buyback recipient when checking
 quote-token conservation.  Failed transactions must preserve all watched
 non-fee state exactly.
 
-The independent verifier decodes the transaction rather than trusting receipt
-signer lists, runs Ed25519 verification, checks unique transaction identities,
-re-derives all pool/LP/ATA addresses, reconstructs the complete plan, decodes
-account bytes, and recomputes classifications.  The tests prove refusal of
-signature substitution, LP-supply and balance corruption, wrong reserves or
-owners, missing/duplicate transactions, altered events or errors, forged case
-counts, changed source/executable identities, and corrupt account encodings.
+The independent verifier reconstructs every complete Solana message from the
+canonical fixture and immutable plan, checks its header and exact signer set,
+and verifies every required Ed25519 signature. It binds the first prestate to
+constructor state and each later prestate to the preceding poststate. All watched
+addresses and executable records must remain present. It strictly decodes account
+metadata and bytes, recomputes fees, accounting, rollback and outcome fields, and
+compares both sides. The AMM executable account is checked against each side's own
+image; its differing code identity is excluded from cross-image state equality.
+
+The reader uses LiteSVM constructors to derive canonical fixture state, with zero
+transactions unless `--replay` is requested. Saved receipts remain observations
+from the producer; offline verification cannot independently prove that a VM ran
+or that logs and snapshots were emitted by it. `--replay` performs a fresh bounded
+execution and requires an identical report.
 
 ## Reproduce
 
-Install the repository requirements in an isolated environment, then build
-the current source.  The builder refuses an existing output directory, uses
-at most two Cargo jobs, checks the 20 GiB free-space floor, and records source
-identity before and after compilation.
+Use normal Python with `solders==0.27.1` and the repository requirements in an
+isolated environment. Supply an actual ELF candidate obtained separately; the
+runtime packet does not authenticate build receipts. The maintained ordinary
+source-build recipe is `scripts/amm_sell/native_build.py`; its SDK/workspace
+requirements and public layout recipe are separate from this runtime admission.
 
 ```sh
-python -m pip install -r requirements.txt
-python reconstruction/verification/pump-amm-multi-lp/build_candidate.py \
-  --output /tmp/pump-amm-multi-lp-build
 python reconstruction/verification/pump-amm-multi-lp/lifecycle.py \
-  --candidate /tmp/pump-amm-multi-lp-build/artifacts/pump_amm_recovered.so \
-  --build-receipt /tmp/pump-amm-multi-lp-build/build-receipt.json \
+  --candidate /absolute/path/to/rebuilt-pump-amm.so \
   --output /tmp/pump-amm-multi-lp-report.json.gz
 python reconstruction/verification/pump-amm-multi-lp/verify.py \
-  --candidate /tmp/pump-amm-multi-lp-build/artifacts/pump_amm_recovered.so \
-  --build-receipt /tmp/pump-amm-multi-lp-build/build-receipt.json \
+  --candidate /absolute/path/to/rebuilt-pump-amm.so \
   --report /tmp/pump-amm-multi-lp-report.json.gz --replay
 python -m unittest discover \
   -s reconstruction/verification/pump-amm-multi-lp -p 'test_*.py' -v
 ```
 
-Output publication is exclusive: an existing report is never replaced.  The
-compressed report retains raw logs and full watched account states; it is
-bounded to the fixed nine-case corpus.
+Outputs must be outside the repository, and existing files and dangling symlinks
+are refused before execution. Reports are published exclusively. Producer and
+reader load local Python dependencies from captured source bytes, ignoring
+bytecode caches, and verify their fixed code/data inventory before and after
+operations. All original/dependency images are pinned to captured hashes. The
+candidate and every executable are frozen for the duration of each run. Optimized
+Python, duplicate JSON keys, nonfinite values, malformed or incomplete signatures,
+and fabricated build receipts are rejected.
 
 ## Qualification and limitation
 
-The retained report is `qualification/report.json.gz` (SHA-256
-`c652fdc074caaff209e24c79babda3bf3078d2d99fc80707fb841615b31fe58f`).
-It binds source manifest
-`da44d85497928a0e21d69c4162dfd6ad4d2caee1047bf9574073db4bb67addf1`
-to candidate
-`ebfac4444b969f9114e174acf485907fa541e1f862bc709d18b6d22407c711ed`
-and the original
-`6a7ad34596d83b4c435b32f458a56e718e9f82eb4ad38e4316616d15d24d8ff7`.
+The `qualification/` directory preserves the author's historical v1 reports and
+self-reported build context. Those files are not admitted by the repaired v2
+reader and are not source-build proof. Fresh v2 results and exact code/input pins
+are recorded separately in `results/`; final qualification identifies the actual
+report bytes and their supplied candidate.
 
-The ordinary pinned v1.44 `cargo build-sbf` artifact is not the repository's
-specialized layout-closure artifact: its receipt honestly records
-`exact_checkpoint_match: false`.  The separately maintained PumpSwap checkpoint
-remains 785/785 raw-equal functions with meaningful-ELF SHA-256
-`51a5f6a7fb5a812de7686e593ce6159f6ee59b15771a3d5d37ab661c46d64586`.
-This package qualifies behavior of the current source build on the bounded
-lifecycle corpus; it neither replaces that checkpoint nor claims finite tests
-prove broad semantic equivalence.
+The repair was exercised with an actual ordinary AMM source build using the
+maintained native recipe and official platform-tools v1.44. The actual candidate
+SHA-256 is `51a5f6a7fb5a812de7686e593ce6159f6ee59b15771a3d5d37ab661c46d64586`.
+Its separate retained build context includes the real compiler/linker invocations,
+logs, source equality, image bytes and disclosed public layout/workspace recipe.
+This runtime suite labels it `supplied_binary_only`; its source snapshot fields
+are contextual and do not assert that an arbitrary supplied ELF was built from
+that snapshot. No source-build receipt is accepted by this suite.
+
+Finite signed execution does not establish broad semantic equivalence, compute
+unit equality, or new whole-program byte identity. Token-2022 coverage uses the
+plain mint/account layout in the named fixture and does not cover arbitrary
+extensions. This packet does not change the repository completion percentage.

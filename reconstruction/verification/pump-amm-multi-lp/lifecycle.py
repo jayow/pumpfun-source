@@ -2,6 +2,9 @@
 """Persistent, authenticated PumpSwap multi-provider LP differential."""
 from __future__ import annotations
 
+if not __debug__:
+    raise SystemExit("Normal Python is required; do not use -O or PYTHONOPTIMIZE.")
+
 import argparse
 import base64
 import gzip
@@ -11,6 +14,8 @@ import os
 import re
 import struct
 import tempfile
+import types
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,12 +27,35 @@ from solders.litesvm import LiteSVM
 from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 from solders.transaction_metadata import FailedTransactionMetadata
+from solders.transaction_status import TransactionErrorInstructionError, InstructionErrorCustom
 
-ROOT = Path(__file__).resolve().parents[3]
+_SELF_SOURCE_SHA256 = globals().get("__source_sha256__")
+if _SELF_SOURCE_SHA256 is None:
+    _SELF_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
+if "_ADMISSION" in globals():
+    A = _ADMISSION
+elif "A" in globals():
+    pass  # A private source loader may provide this same admitted graph.
+else:
+    _path = HERE / "admission.py"
+    if _path.is_symlink():
+        raise ValueError("admission source must be regular")
+    _raw = _path.read_bytes()
+    A = types.ModuleType("_amm_multi_lp_admission")
+    A.__file__ = str(_path)
+    A.__source_sha256__ = hashlib.sha256(_raw).hexdigest()
+    exec(compile(_raw, str(_path), "exec", dont_inherit=True), A.__dict__)
+A.LOADED[str(Path(__file__).resolve())] = _SELF_SOURCE_SHA256
+_OUTPUT = A.source_module("output", ROOT / "scripts/pump_differential_output.py")
+
 IDL_PATH = ROOT / "evidence/upstream/pump_amm.json"
 CONFIG_PATH = ROOT / "research/imported-lab/analysis/pump_fun/config-snapshot.json"
 TRADE_FIXTURE_PATH = ROOT / "research/imported-lab/analysis/pump_fun/amm-v2-trade-fixture.json"
-IDL = json.loads(IDL_PATH.read_text())
+IDL_BYTES = A.regular_bytes(IDL_PATH, root=ROOT)
+A.bind_bytes(IDL_PATH, IDL_BYTES)
+IDL = A.json_bytes(IDL_BYTES)
 
 P = Pubkey.from_string
 AMM = P(IDL["address"])
@@ -51,13 +79,17 @@ PROVIDER_A = Keypair.from_seed(hashlib.sha256(b"pump-amm-multi-lp/provider-a").d
 PROVIDER_B = Keypair.from_seed(hashlib.sha256(b"pump-amm-multi-lp/provider-b").digest())
 MINT_AUTHORITY = Keypair.from_seed(hashlib.sha256(b"pump-amm-multi-lp/mint-authority").digest())
 
-CONFIG_ROW = next(row for row in json.loads(CONFIG_PATH.read_text())["accounts"]
+CONFIG_BYTES = A.regular_bytes(CONFIG_PATH, root=ROOT)
+A.bind_bytes(CONFIG_PATH, CONFIG_BYTES)
+CONFIG_ROW = next(row for row in A.json_bytes(CONFIG_BYTES)["accounts"]
                   if row["program_name"] == "pump_amm")
 CONFIG = P(CONFIG_ROW["address"])
 CONFIG_DATA = bytearray(base64.b64decode(CONFIG_ROW["data_base64"]))
 CONFIG_DATA[56] = 0
 
-TRADE_FIXTURE = json.loads(TRADE_FIXTURE_PATH.read_text())
+TRADE_FIXTURE_BYTES = A.regular_bytes(TRADE_FIXTURE_PATH, root=ROOT)
+A.bind_bytes(TRADE_FIXTURE_PATH, TRADE_FIXTURE_BYTES)
+TRADE_FIXTURE = A.json_bytes(TRADE_FIXTURE_BYTES)
 FEE_CONFIG_ROW = TRADE_FIXTURE["accounts"]["fee_config"]
 BUYBACK_ROW = TRADE_FIXTURE["accounts"]["buyback_fee_recipient"]
 FEE_CONFIG = P(FEE_CONFIG_ROW["address"])
@@ -92,11 +124,11 @@ def sha(raw: bytes) -> str:
 
 
 def file_sha(path: Path) -> str:
-    return sha(path.read_bytes())
+    return sha(A.regular_bytes(path))
 
 
 def canonical_hash(value) -> str:
-    return sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+    return sha(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode())
 
 
 def key(label: str) -> Pubkey:
@@ -139,17 +171,16 @@ def pool_supply(account: Account | None) -> int | None:
 def account_record(account: Account | None) -> dict | None:
     if account is None:
         return None
-    return {
-        "lamports": account.lamports,
-        "owner": str(account.owner),
-        "executable": account.executable,
-        "rent_epoch": account.rent_epoch,
-        "data_base64": base64.b64encode(bytes(account.data)).decode(),
-        "data_sha256": sha(bytes(account.data)),
+    common = {
+        "lamports": account.lamports, "owner": str(account.owner), "executable": account.executable,
+        "rent_epoch": account.rent_epoch, "data_len": len(account.data), "data_sha256": sha(bytes(account.data)),
         "token_amount": token_amount(account) if account.owner in (TOKEN, TOKEN22) and len(account.data) >= 165 else None,
         "mint_supply": mint_supply(account) if account.owner in (TOKEN, TOKEN22) and 82 <= len(account.data) < 165 else None,
         "pool_lp_supply": pool_supply(account) if account.owner == AMM else None,
     }
+    if account.executable:
+        return dict(common, data_omitted=True)
+    return dict(common, data_base64=base64.b64encode(bytes(account.data)).decode())
 
 
 def instruction(name: str, keys: list[Pubkey], data: bytes) -> Instruction:
@@ -215,8 +246,7 @@ def outcome(logs: list[str], error: str | None) -> str:
 def failure_class(error: str | None) -> str | None:
     if error is None:
         return None
-    infrastructure = ("BlockhashNotFound", "AlreadyProcessed", "SignatureFailure",
-                      "ProgramFailedToComplete", "ComputationalBudgetExceeded")
+    infrastructure = ("BlockhashNotFound", "AlreadyProcessed", "SignatureFailure")
     return "infrastructure" if any(item in error for item in infrastructure) else "program"
 
 
@@ -259,9 +289,10 @@ class DualHarness:
     """Two independent VMs receiving byte-identical signed transactions."""
 
     def __init__(self, candidate: Path, *, case_index: int = 0, token22_base: bool = False,
-                 cross_pool: bool = False):
-        self.images = {"original": CAPTURED["original"], "candidate": candidate}
-        self.vms = {side: self._vm(image, case_index) for side, image in self.images.items()}
+                 cross_pool: bool = False, images=None):
+        self.input_images = CAPTURED if images is None else images
+        self.images = {"original": self.input_images["original"], "candidate": candidate}
+        self.vms = {side: self._vm(image, case_index, self.input_images) for side, image in self.images.items()}
         primary = PoolFixture.derive(
             f"case-{case_index}", index=case_index,
             base_program=TOKEN22 if token22_base else TOKEN)
@@ -274,18 +305,22 @@ class DualHarness:
         self.tracked: set[Pubkey] = set()
         self.receipts = {"original": [], "candidate": []}
         self._seed()
+        self.tracked.update((AMM, TOKEN, TOKEN22, ATA, FEES, SYSTEM))
+        for provider in (PROVIDER_A, PROVIDER_B):
+            self.tracked.add(Pubkey.find_program_address([b"user_volume_accumulator", bytes(provider.pubkey())], AMM)[0])
 
     @staticmethod
-    def _vm(image: Path, case_index: int) -> LiteSVM:
+    def _vm(image: Path, case_index: int, images=None) -> LiteSVM:
         vm = (LiteSVM().with_sigverify(True).with_blockhash_check(True)
               .with_transaction_history(128).with_log_bytes_limit(None))
         for _ in range(case_index * 16):
             vm.expire_blockhash()
         vm.set_clock(Clock(1_000, 0, 0, 0, 1_700_000_000))
-        for address, path in ((AMM, image), (TOKEN, CAPTURED["spl_token"]),
-                              (TOKEN22, CAPTURED["spl_token_2022"]),
-                              (ATA, CAPTURED["associated_token"]),
-                              (FEES, CAPTURED["pump_fees"])):
+        inputs = CAPTURED if images is None else images
+        for address, path in ((AMM, image), (TOKEN, inputs["spl_token"]),
+                              (TOKEN22, inputs["spl_token_2022"]),
+                              (ATA, inputs["associated_token"]),
+                              (FEES, inputs["pump_fees"])):
             vm.add_program_from_file(address, path)
         return vm
 
@@ -376,8 +411,10 @@ class DualHarness:
         unique = {signer.pubkey(): signer for signer in [FEE_PAYER, *signers]}
         tx = Transaction.new_signed_with_payer(
             instructions, FEE_PAYER.pubkey(), list(unique.values()), blockhash)
-        if not all(tx.verify_with_results()):
-            raise RuntimeError("locally generated transaction failed Ed25519 verification")
+        checked = list(tx.verify_with_results())
+        required = tx.message.header.num_required_signatures
+        if not checked or len(tx.signatures) != required or checked != [True] * required:
+            raise RuntimeError("locally generated transaction failed complete Ed25519 verification")
         raw = bytes(tx)
         message = bytes(tx.message)
         common = {
@@ -388,7 +425,7 @@ class DualHarness:
             "message_sha256": sha(message),
             "blockhash": str(blockhash),
             "blockhash_sha256": sha(bytes(blockhash)),
-            "signer_pubkeys": [str(pubkey) for pubkey in unique],
+            "signer_pubkeys": [str(pubkey) for pubkey in tx.message.account_keys[:required]],
             "instruction_count": len(instructions),
             "pool_label": self.pool_label,
         }
@@ -405,6 +442,7 @@ class DualHarness:
             receipt = {
                 **common,
                 "error": error,
+                "error_detail": error_detail(result.err()) if failed else None,
                 "outcome": outcome(meta.logs(), error),
                 "failure_class": failure_class(error),
                 "raw_logs": meta.logs(),
@@ -591,14 +629,45 @@ def plans() -> list[dict]:
     }]
 
 
-def run_plan(candidate: Path, plan: dict, index: int = 0) -> dict:
-    harness = DualHarness(candidate, case_index=index, token22_base=plan.get("token22_base", False),
-                          cross_pool=plan.get("cross_pool", False))
+def error_detail(error):
+    if isinstance(error, TransactionErrorInstructionError):
+        if isinstance(error.err, InstructionErrorCustom):
+            return {"instruction_index": error.index, "error_kind": "Custom", "custom_code": error.err.code}
+        return {"instruction_index": error.index, "error_kind": type(error.err).__name__, "description": str(error.err)}
+    return {"error_kind": type(error).__name__, "description": str(error)}
+
+
+def expected_error_detail(case_name, number):
+    failures = {("atomic-valid-deposit-invalid-withdraw-rollback", 5): (1, 1),
+                ("foreign-lp-authority-refused-then-owner-withdraws", 5): (0, 2015),
+                ("over-withdraw-refused-then-partial-chain", 5): (0, 1)}
+    value = failures.get((case_name, number))
+    return None if value is None else {"instruction_index": value[0], "error_kind": "Custom", "custom_code": value[1]}
+
+
+def fixture_only(candidate: Path, index: int, plan: dict, images=None):
+    """Seed the canonical accounts and fixed watches; execute zero transactions."""
+    return DualHarness(candidate, case_index=index, token22_base=plan.get("token22_base", False),
+                       cross_pool=plan.get("cross_pool", False), images=images)
+
+
+def plan_step(harness, step, number):
+    """Capture existing instruction constructors without invoking the VM.
+
+    This fixed fixture is created internally, never from report-controlled code.
+    The original execute method is restored before any actual transaction runs.
+    """
+    harness.select_pool(step.get("pool", "primary"))
     providers = {"A": PROVIDER_A, "B": PROVIDER_B}
-    for number, step in enumerate(plan["steps"]):
-        harness.select_pool(step.get("pool", "primary"))
-        op = step["op"]
-        label = f"{number:02d}-{op}"
+    op = step["op"]
+    label = f"{number:02d}-{op}"
+    captured = []
+    original_execute = harness.execute
+    def capture(name, instructions, signers, operation):
+        unique = {pair.pubkey(): pair for pair in (FEE_PAYER, *signers)}
+        captured.append((name, instructions, list(unique.values()), operation))
+    harness.execute = capture
+    try:
         if op == "fund":
             harness.fund_provider(providers[step["provider"]], step.get("amount", 10**12))
         elif op == "create_pool":
@@ -611,40 +680,49 @@ def run_plan(candidate: Path, plan: dict, index: int = 0) -> dict:
             harness.withdraw(providers[step["provider"]], step["amount"], label,
                              providers.get(step.get("lp_owner")))
         elif op == "trade":
-            harness.trade(step["name"], providers[step["provider"]], step["amount"],
-                          step["limit"], label)
+            harness.trade(step["name"], providers[step["provider"]], step["amount"], step["limit"], label)
         elif op == "atomic":
             harness.atomic(label, step["operations"])
         else:
-            raise ValueError(f"unknown operation: {op}")
-    def fixture_record(pool):
+            raise ValueError("unknown operation: " + str(op))
+    finally:
+        harness.execute = original_execute
+    if len(captured) != 1:
+        raise ValueError("canonical plan must create exactly one transaction")
+    return captured[0]
+
+
+def expected_fixture(harness):
+    def record(pool):
         return {
             "pool": str(pool.pool), "lp_mint": str(pool.lp),
             "base_mint": str(pool.base), "quote_mint": str(pool.quote),
             "provider_a": str(PROVIDER_A.pubkey()), "provider_b": str(PROVIDER_B.pubkey()),
             "fee_payer": str(FEE_PAYER.pubkey()),
-            "base_token_program": str(pool.base_program),
-            "quote_token_program": str(pool.quote_program),
+            "base_token_program": str(pool.base_program), "quote_token_program": str(pool.quote_program),
             "vault_base": str(pool.vault_base), "vault_quote": str(pool.vault_quote),
             "provider_a_accounts": {k: str(v) for k, v in pool.provider_accounts(PROVIDER_A).items()},
             "provider_b_accounts": {k: str(v) for k, v in pool.provider_accounts(PROVIDER_B).items()},
             "minimum_locked_lp": 100,
         }
-
-    fixture = fixture_record(harness.pools["primary"])
+    value = record(harness.pools["primary"])
     if "secondary" in harness.pools:
-        fixture["secondary"] = fixture_record(harness.pools["secondary"])
-    return {
-        "case": plan["name"],
-        "plan": plan,
-        "fixture": fixture,
-        "original": {"receipts": harness.receipts["original"]},
-        "candidate": {"receipts": harness.receipts["candidate"]},
-    }
+        value["secondary"] = record(harness.pools["secondary"])
+    return value
+
+
+def run_plan(candidate: Path, plan: dict, index: int = 0, images=None) -> dict:
+    harness = fixture_only(candidate, index, plan, images)
+    for number, step in enumerate(plan["steps"]):
+        name, instructions, signers, operation = plan_step(harness, step, number)
+        harness.execute(name, instructions, signers, operation)
+    return {"case": plan["name"], "plan": plan, "fixture": expected_fixture(harness),
+            "original": {"receipts": harness.receipts["original"]},
+            "candidate": {"receipts": harness.receipts["candidate"]}}
 
 
 def compare_case(row: dict) -> list[str]:
-    fields = ("transaction_base64", "signatures", "message_sha256", "pool_label", "error", "outcome",
+    fields = ("transaction_base64", "signatures", "message_sha256", "pool_label", "error", "error_detail", "outcome",
               "failure_class", "semantic_logs", "events", "inner_instructions", "return_data",
               "before", "after", "rollback_nonfee_equal", "accounting")
     differences = []
@@ -654,13 +732,19 @@ def compare_case(row: dict) -> list[str]:
         return ["receipt_count"]
     for index, (a, b) in enumerate(zip(left, right)):
         for field in fields:
-            if a.get(field) != b.get(field):
+            if field in {"before", "after"}:
+                left_state = {k: v for k, v in a[field].items() if k != str(AMM)}
+                right_state = {k: v for k, v in b[field].items() if k != str(AMM)}
+                equal = A.same_json(left_state, right_state)
+            else:
+                equal = A.same_json(a.get(field), b.get(field))
+            if not equal:
                 differences.append(f"{index}:{field}")
     return differences
 
 
 def input_hashes() -> dict:
-    return {str(path.relative_to(ROOT)): file_sha(path) for path in INPUT_PATHS}
+    return A.snapshot_inputs()
 
 
 def source_manifest() -> tuple[dict, str]:
@@ -678,82 +762,98 @@ def program_hashes(candidate: Path) -> dict:
             **{name: file_sha(path) for name, path in CAPTURED.items() if name != "original"}}
 
 
+CAPTURED_SHA256 = {
+    "original": "6a7ad34596d83b4c435b32f458a56e718e9f82eb4ad38e4316616d15d24d8ff7",
+    "spl_token": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697",
+    "spl_token_2022": "15a2e615a42e20f31714bbaaee43002ae6f1cda2e8d7118243117ab3c1342e2d",
+    "associated_token": "6804554e69fd3a58caa191dc4a58f4c67223d30ca28ab8987f39fc18d2f7374d",
+    "pump_fees": "4f2955d0f6b40cc9ff7daa18ccad7d19119ba1249759f4e7e3bb691beee6b35e",
+}
+
+
 def build_provenance(candidate: Path, receipt_path: Path | None) -> dict:
-    if receipt_path is None:
-        if file_sha(candidate) != file_sha(CAPTURED["original"]):
-            raise ValueError("a non-original candidate requires --build-receipt")
-        return {"kind": "original_control"}
-    receipt = json.loads(receipt_path.read_text())
-    sources, source_digest = source_manifest()
-    if (receipt.get("schema") != "pump-amm-multi-lp-build-v1"
-            or receipt.get("returncode") != 0 or not receipt.get("source_unchanged")
-            or receipt.get("artifact_sha256") != file_sha(candidate)
-            or receipt.get("source_sha256") != sources
-            or receipt.get("source_after_sha256") != sources
-            or receipt.get("source_manifest_sha256") != source_digest
-            or receipt.get("source_after_manifest_sha256") != source_digest
-            or receipt.get("compiler_jobs") != 2 or receipt.get("toolchain") != "v1.44"):
-        raise ValueError("candidate build receipt does not bind current source and artifact")
-    return {"kind": "source_build", "receipt": receipt,
-            "receipt_canonical_sha256": canonical_hash(receipt)}
+    if receipt_path is not None:
+        raise ValueError("This runtime suite does not authenticate source-build receipts")
+    return {"kind": "supplied_binary_only", "source_build_verified_by_this_suite": False}
+
+
+def revision_context():
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def run_suite(candidate: Path, build_receipt: Path | None = None) -> dict:
+    provenance = build_provenance(candidate, build_receipt)
+    admitted = input_hashes()
+    source_files, source_digest = source_manifest()
+    images = {name: A.regular_bytes(path, root=ROOT) for name, path in CAPTURED.items()}
+    images["candidate"] = A.regular_bytes(candidate)
+    for name, digest in CAPTURED_SHA256.items():
+        if sha(images[name]) != digest:
+            raise ValueError("captured executable identity: " + name)
     cases = []
-    for index, plan in enumerate(plans()):
-        row = run_plan(candidate, plan, index)
-        row["mismatch_fields"] = compare_case(row)
-        observed = [receipt["outcome"] for receipt in row["original"]["receipts"]]
-        row["expected_original_outcomes"] = EXPECTED_OUTCOMES[plan["name"]]
-        row["observed_original_outcomes"] = observed
-        row["oracle_mismatches"] = ([] if observed == row["expected_original_outcomes"] else [{
-            "expected": row["expected_original_outcomes"], "observed": observed}])
-        infrastructure = any(receipt["failure_class"] == "infrastructure"
-                             for side in ("original", "candidate") for receipt in row[side]["receipts"])
-        if infrastructure:
-            row["classification"] = "infrastructure_failure"
-        elif row["oracle_mismatches"]:
-            row["classification"] = "unsupported_fixture"
-        elif row["mismatch_fields"]:
-            row["classification"] = "different_behavior"
-        else:
-            row["classification"] = "equal_observed_behavior"
-        cases.append(row)
-    sources, source_digest = source_manifest()
+    with tempfile.TemporaryDirectory(prefix="amm-multi-lp-inputs-") as directory:
+        private = {}
+        for name, raw in images.items():
+            path = Path(directory) / (name + ".so")
+            path.write_bytes(raw)
+            private[name] = path
+        for index, plan in enumerate(plans()):
+            row = run_plan(private["candidate"], plan, index, private)
+            row["mismatch_fields"] = compare_case(row)
+            observed = [receipt["outcome"] for receipt in row["original"]["receipts"]]
+            row["expected_original_outcomes"] = EXPECTED_OUTCOMES[plan["name"]]
+            row["observed_original_outcomes"] = observed
+            row["oracle_mismatches"] = [] if observed == row["expected_original_outcomes"] else [{
+                "expected": row["expected_original_outcomes"], "observed": observed}]
+            infrastructure = any(receipt["failure_class"] == "infrastructure" for side in ("original", "candidate")
+                                 for receipt in row[side]["receipts"])
+            row["classification"] = ("infrastructure_failure" if infrastructure else
+                                     "unsupported_fixture" if row["oracle_mismatches"] else
+                                     "different_behavior" if row["mismatch_fields"] else "equal_observed_behavior")
+            cases.append(row)
+    A.recheck_inputs(admitted)
+    if A.regular_bytes(candidate) != images["candidate"]:
+        raise ValueError("candidate changed during execution")
     return {
-        "schema": "pump-amm-multi-lp-v1",
-        "upstream_commit": "747aae62864e490ac2142906c54fe039a8e9ae66",
-        "program_ids": {"pump_amm": str(AMM), "spl_token": str(TOKEN),
-                        "spl_token_2022": str(TOKEN22), "associated_token": str(ATA)},
-        "program_sha256": program_hashes(candidate),
-        "candidate_build": build_provenance(candidate, build_receipt),
-        "producer_input_sha256": input_hashes(),
-        "candidate_source_sha256": sources,
-        "candidate_source_manifest_sha256": source_digest,
-        "case_count": len(cases),
-        "transaction_count_per_image": sum(len(row["plan"]["steps"]) for row in cases),
-        "cases": cases,
-        "classification_counts": {name: sum(row["classification"] == name for row in cases)
-                                  for name in ("equal_observed_behavior", "different_behavior",
-                                               "unsupported_fixture", "infrastructure_failure")},
+        "schema": "pump-amm-multi-lp-v2", "upstream_commit": revision_context(),
+        "source_snapshot_context_only": True,
+        "program_ids": {"pump_amm": str(AMM), "spl_token": str(TOKEN), "spl_token_2022": str(TOKEN22), "associated_token": str(ATA)},
+        "program_sha256": {name: sha(raw) for name, raw in images.items()},
+        "candidate_build": provenance, "producer_input_sha256": admitted,
+        "candidate_source_sha256": source_files, "candidate_source_manifest_sha256": source_digest,
+        "case_count": len(cases), "transaction_count_per_image": sum(len(row["plan"]["steps"]) for row in cases),
+        "cases": cases, "classification_counts": {name: sum(row["classification"] == name for row in cases)
+            for name in ("equal_observed_behavior", "different_behavior", "unsupported_fixture", "infrastructure_failure")},
     }
 
 
 def write_report(path: Path, report: dict) -> None:
-    raw = (json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    payload = gzip.compress(raw, mtime=0) if path.suffix == ".gz" else raw
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", delete=False) as stream:
-        temporary = Path(stream.name)
-        stream.write(payload)
-        stream.flush()
-        os.fsync(stream.fileno())
-    try:
-        # Hard-link publication is atomic and exclusive on the destination's
-        # filesystem.  A prior report is evidence, never an overwrite target.
-        os.link(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    A.outside_repository(path)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("retain prior report: " + str(path))
+    publisher = _OUTPUT.PumpReport(path, ROOT, None, __file__, overwrite=False)
+    raw = (json.dumps(report, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+    publisher.write(gzip.compress(raw, mtime=0) if path.suffix == ".gz" else raw)
+
+
+def produce(candidate: Path, output: Path, build_receipt: Path | None = None):
+    A.outside_repository(output)
+    if output.exists() or output.is_symlink():
+        raise FileExistsError("retain prior report: " + str(output))
+    publisher = _OUTPUT.PumpReport(output, ROOT, candidate, __file__, overwrite=False)
+    report = run_suite(candidate, build_receipt)
+    A.recheck_inputs(report["producer_input_sha256"])
+    if file_sha(candidate) != report["program_sha256"]["candidate"]:
+        raise ValueError("candidate changed before publication")
+    raw = (json.dumps(report, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+    publisher.write(gzip.compress(raw, mtime=0) if output.suffix == ".gz" else raw)
+    A.recheck_inputs(report["producer_input_sha256"])
+    if file_sha(candidate) != report["program_sha256"]["candidate"]:
+        raise ValueError("candidate changed during publication")
+    return report
 
 
 def main() -> int:
@@ -761,16 +861,15 @@ def main() -> int:
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--build-receipt", type=Path,
-                        help="required for a non-original candidate")
+                        help="unsupported: runtime reports do not authenticate source-build receipts")
     args = parser.parse_args()
     candidate = args.candidate.resolve()
-    report = run_suite(candidate, args.build_receipt.resolve() if args.build_receipt else None)
-    write_report(args.output.resolve(), report)
+    report = produce(candidate, args.output.absolute(), args.build_receipt.resolve() if args.build_receipt else None)
     print(json.dumps({"cases": report["case_count"],
                       "transactions_per_image": report["transaction_count_per_image"],
                       "classification_counts": report["classification_counts"]}, indent=2))
-    return bool(report["classification_counts"]["different_behavior"]
-                or report["classification_counts"]["infrastructure_failure"])
+    return report["classification_counts"] != {"equal_observed_behavior": len(plans()),
+             "different_behavior": 0, "unsupported_fixture": 0, "infrastructure_failure": 0}
 
 
 if __name__ == "__main__":
