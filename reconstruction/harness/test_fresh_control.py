@@ -67,6 +67,7 @@ class FreshControlTests(unittest.TestCase):
                 "unstripped_sha256": fresh_control.sha256_file(image),
                 "candidate_sha256": fresh_control.sha256_file(output / "candidate.so"),
             }
+        self.fake_build = build
 
         def score(image, expected):
             side = Path(image).read_bytes().decode()
@@ -131,6 +132,84 @@ class FreshControlTests(unittest.TestCase):
         receipt = self.run_pair()
         self.assertEqual(receipt["scores"]["candidate"]["ambiguous"], ["0x108"])
 
+    def test_missing_window_is_rejected(self):
+        self.windows["candidate"].pop(0x108)
+        receipt = self.run_pair()
+        self.assertFalse(receipt["qualification"]["accepted"])
+        self.assertEqual(receipt["comparison"]["missing"], ["0x108"])
+        self.assertIn("missing_windows", receipt["qualification"]["rejection_reasons"])
+
+    def test_resized_window_is_rejected(self):
+        self.windows["candidate"][0x108] = row(False, False, size=16)
+        receipt = self.run_pair()
+        self.assertFalse(receipt["qualification"]["accepted"])
+        self.assertEqual(receipt["comparison"]["resized"], ["0x108"])
+        self.assertIn("resized_windows", receipt["qualification"]["rejection_reasons"])
+
+    def test_candidate_compilation_failure_is_retained_and_rejected(self):
+        def fail_candidate(source, work, output, **kwargs):
+            if Path(source) == self.candidate.resolve():
+                output.mkdir(parents=True)
+                (output / "build.log").write_text("synthetic compiler failure\n", encoding="utf-8")
+                return {"ok": False, "runtime_valid": False, "stack_warnings": []}
+            return self.fake_build(source, work, output, **kwargs)
+
+        fresh_control.fastbuild.build.side_effect = fail_candidate
+        receipt = self.run_pair()
+        self.assertFalse(receipt["qualification"]["accepted"])
+        self.assertEqual(receipt["qualification"]["rejection_reasons"], ["candidate_build_invalid"])
+        self.assertIn("candidate-build/build.log", receipt["artifacts"])
+
+    def test_stack_invalid_build_is_never_scored(self):
+        def invalid_stack(source, work, output, **kwargs):
+            result = self.fake_build(source, work, output, **kwargs)
+            if Path(source) == self.base.resolve():
+                result["runtime_valid"] = False
+                result["stack_warnings"] = ["Stack offset exceeded max offset"]
+            return result
+
+        fresh_control.fastbuild.build.side_effect = invalid_stack
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"], ["base_build_invalid"])
+        self.assertEqual(receipt["scores"], {})
+
+    def test_mid_build_source_mutation_is_rejected(self):
+        def mutating_build(source, work, output, **kwargs):
+            result = self.fake_build(source, work, output, **kwargs)
+            if Path(source) == self.base.resolve():
+                (Path(source) / "src/lib.rs").write_text("pub fn mutated() {}\n", encoding="utf-8")
+            return result
+
+        fresh_control.fastbuild.build.side_effect = mutating_build
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"], ["infrastructure_failure"])
+        self.assertIn("source inputs changed", receipt["qualification"]["detail"])
+        self.assertEqual(receipt["scores"], {})
+
+    def test_toolchain_input_mutation_is_rejected_before_scoring(self):
+        fresh_control._binding.side_effect = [
+            {"tools": {"score.py": "before"}},
+            {"tools": {"score.py": "after"}},
+        ]
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"], ["toolchain_or_scorer_input_mutation"])
+        self.assertEqual(receipt["scores"], {})
+
+    def test_missing_scoring_inputs_produce_an_infrastructure_receipt(self):
+        fresh_control.copy_original_inputs.side_effect = FileNotFoundError("missing original.so")
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"], ["infrastructure_failure"])
+        self.assertIn("missing original.so", receipt["qualification"]["detail"])
+        self.assertTrue((self.root / "out/receipt.json").is_file())
+
+    def test_corrupt_score_membership_is_rejected(self):
+        fresh_control.official_score.score_with_hash.side_effect = [
+            ({0x100: {"bytes": 7, "normalized": True, "raw": True, "symbols": ["bad"]}}, "bad"),
+        ]
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"], ["infrastructure_failure"])
+        self.assertIn("invalid byte length", receipt["qualification"]["detail"])
+
     def test_report_is_deterministic_across_output_directories(self):
         first = self.run_pair("one")
         first_bytes = (self.root / "one/receipt.json").read_bytes()
@@ -151,6 +230,15 @@ class FreshControlTests(unittest.TestCase):
         loaded = json.loads((self.root / "out/receipt.json").read_text())
         self.assertEqual(loaded, receipt)
         self.assertTrue((self.root / "out/receipt.json").read_bytes().endswith(b"\n"))
+
+    def test_atomic_fresh_receipt_publication_preserves_previous_document(self):
+        target = self.root / "receipt.json"
+        target.write_text('{"old": true}\n', encoding="utf-8")
+        with mock.patch.object(fresh_control.os, "replace", side_effect=OSError("interrupted")):
+            with self.assertRaisesRegex(OSError, "interrupted"):
+                fresh_control.publish_json(target, {"new": True})
+        self.assertEqual(target.read_text(), '{"old": true}\n')
+        self.assertEqual(list(self.root.glob(".receipt.json.*")), [])
 
 
 if __name__ == "__main__":

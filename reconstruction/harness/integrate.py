@@ -538,12 +538,12 @@ def main():
                 exit_code = 1
                 break
         validate_inputs()
-        if a.fresh_control and not exit_code:
+        if a.fresh_control:
             rejected = [part for part in report['parts'] if part['status'] not in ('applied', 'empty')]
-            if rejected:
+            if exit_code or rejected:
                 report['qualification'] = {
                     'accepted': False,
-                    'rejection_reasons': ['part_not_applied'],
+                    'rejection_reasons': ['part_application_error' if exit_code else 'part_not_applied'],
                     'rejected_parts': [{'label': part['label'], 'status': part['status']} for part in rejected],
                 }
                 exit_code = 1

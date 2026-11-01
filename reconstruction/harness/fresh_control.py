@@ -109,7 +109,11 @@ def write_score(path: Path, image_sha256: str, windows: dict[int, dict]) -> None
 
 
 def _binding(scoring_inputs: Path, sdk: Path, hybrid: Path) -> dict:
-    return build_score_pair.bound_inputs(scoring_inputs, sdk, hybrid)
+    result = build_score_pair.bound_inputs(scoring_inputs, sdk, hybrid)
+    result["fresh_control_tools"] = {
+        name: sha256_file(H / name) for name in ("fresh_control.py", "integrate.py")
+    }
+    return result
 
 
 def _reject(reason: str, detail: str | None = None) -> dict:
@@ -155,7 +159,6 @@ def run_pair(
     output.mkdir(parents=True)
     scoring_inputs = output / "scoring-inputs"
     scoring_inputs.mkdir()
-    copy_original_inputs(SC / "base", scoring_inputs)
 
     receipt = {
         "schema": "pump-fresh-control-v1",
@@ -177,6 +180,7 @@ def run_pair(
     saved_objdump = getattr(official_score, "OBJDUMP", missing)
 
     try:
+        copy_original_inputs(SC / "base", scoring_inputs)
         fastbuild.SDK = sdk
         fastbuild.LOCKDIR = output / "locks"
         fastbuild.RECIPES["identity"] = {
@@ -209,6 +213,19 @@ def run_pair(
                 receipt["artifacts"] = artifact_inventory(output)
                 publish_json(receipt_path, receipt)
                 return receipt
+            if result.get("source_sha256") != sources[side]["sha256"]:
+                receipt["qualification"] = _reject(f"{side}_build_source_mismatch")
+                receipt["artifacts"] = artifact_inventory(output)
+                publish_json(receipt_path, receipt)
+                return receipt
+            for artifact, field in (("unstripped.so", "unstripped_sha256"),
+                                    ("candidate.so", "candidate_sha256")):
+                path = output / f"{side}-build" / artifact
+                if not path.is_file() or sha256_file(path) != result.get(field):
+                    receipt["qualification"] = _reject(f"{side}_build_artifact_mismatch")
+                    receipt["artifacts"] = artifact_inventory(output)
+                    publish_json(receipt_path, receipt)
+                    return receipt
             assert_unchanged(source, sources[side], phase=f"{side} build")
             if _binding(scoring_inputs, sdk, hybrid) != bound:
                 receipt["qualification"] = _reject("toolchain_or_scorer_input_mutation")
