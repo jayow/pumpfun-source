@@ -11,12 +11,11 @@ spec=importlib.util.spec_from_file_location('two_curve_fixture',H);f=importlib.u
 Base=f.LiteSVM
 CASE={};SENDS=[]
 def signatures_verified(tx):
- """True only when the transaction carries signatures and all of them verify.
-
- solders returns no results for a transaction with no signatures, and
- ``all([])`` is true; the signature vector itself must be non-empty.
- """
- return bool(tx.signatures) and all(tx.verify_with_results())
+ """True only for every signature required by the message header."""
+ required = tx.message.header.num_required_signatures
+ if required <= 0 or len(tx.signatures) != required:return False
+ results = tx.verify_with_results()
+ return bool(results) and len(results) == required and all(results)
 NATIVE_ALIAS=f.Pubkey.from_bytes(bytes([146])*32)
 OLD_VA,OLD_VQA,OLD_VQB=f.VA,f.VQA,f.VQB
 class ObservedVM(Base):

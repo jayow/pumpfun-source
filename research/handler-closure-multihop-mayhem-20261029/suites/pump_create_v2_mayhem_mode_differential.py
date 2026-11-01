@@ -23,6 +23,9 @@ New bounded dimensions beyond `scripts/pump_create_mayhem_differential.py`:
     and bogus token vaults, pre-existing mayhem_state, missing accounts);
   - holder-reward and deprecated-cashback option boundaries in Mayhem mode.
 """
+if not __debug__:
+    raise SystemExit('research evidence requires normal Python (assertions enabled)')
+
 import argparse
 import base64
 import gzip
@@ -106,8 +109,13 @@ def _init_global_params(vm):
 
 
 def require_signed(tx):
-    """Reject a transaction carrying no signatures before verifying it."""
-    assert tx.signatures and all(tx.verify_with_results())
+    """Require the complete nonempty header signature vector, also under -O."""
+    required = tx.message.header.num_required_signatures
+    if required <= 0 or len(tx.signatures) != required:
+        raise AssertionError('incomplete transaction signature vector')
+    results = tx.verify_with_results()
+    if not results or len(results) != required or not all(results):
+        raise AssertionError('transaction signature verification failed')
 
 
 def run(c, pump_bin=ORIGINAL_PUMP):

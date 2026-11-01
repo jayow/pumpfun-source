@@ -1,80 +1,96 @@
-"""Research harnesses must reject a transaction whose signature vector is empty.
-
-solders returns no verification results for a transaction that carries no
-signatures, and ``all([])`` is true, so a bare ``all(tx.verify_with_results())``
-assert accepts a stripped transaction. The sweep in
-``tests/test_signature_nonempty_sweep.py`` scans ``scripts``, ``reconstruction``
-and ``tests``; ``research`` was outside it, so two research harnesses kept the
-bare form. Both now route through a module-level ``require_signed`` guard.
-
-The research modules cannot be imported here (one hardcodes a workstation root
-path, both resolve evidence and build LiteSVM state at import time), so this
-test parses, extracts and executes the guard source itself.
-"""
+"""Extract guards without importing or executing research campaigns."""
 import ast
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
-
-from solders.compute_budget import set_compute_unit_limit
 from solders.hash import Hash
+from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
-from solders.transaction import Transaction
-
+from solders.pubkey import Pubkey
+from solders.signature import Signature
+from solders.transaction import Transaction, VersionedTransaction
+from solders.message import MessageV0
 ROOT = Path(__file__).resolve().parents[1]
 HARNESSES = (
     'research/pump-multi-hop-corpus/harness.py',
     'research/handler-closure-multihop-mayhem-20261029/suites/pump_create_v2_mayhem_mode_differential.py',
 )
-BARE_GATE = 'assert all(tx.verify_with_results())'
+VERSIONED = 'research/runtime-versioned-reset-20261101/reproduce.py'
 
 
-def guard_from(relative):
-    """Compile a module's ``require_signed`` without importing the module."""
+def extract(relative, name, optimize=0):
     path = ROOT / relative
-    text = path.read_text(encoding='utf-8')
-    tree = ast.parse(text, filename=str(path))
-    functions = [node for node in tree.body
-                 if isinstance(node, ast.FunctionDef) and node.name == 'require_signed']
-    if len(functions) != 1:
-        raise AssertionError(f'{relative}: expected one module-level require_signed')
-    segment = ast.get_source_segment(text, functions[0])
+    tree = ast.parse(path.read_bytes(), filename=str(path))
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    if len(nodes) != 1:
+        raise AssertionError(f'{relative}: expected one {name}')
     namespace = {}
-    exec(compile(segment, str(path), 'exec'), namespace)  # noqa: S102 - repository source
-    return namespace['require_signed']
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec',
+                 optimize=optimize), namespace)
+    return namespace[name]
 
 
-def signed_transaction():
+def vectors(versioned=False):
     payer = Keypair.from_seed(bytes([31]) * 32)
-    return Transaction.new_signed_with_payer(
-        [set_compute_unit_limit(1_400_000)], payer.pubkey(), [payer], Hash.default())
-
-
-def stripped_transaction():
-    return Transaction.populate(signed_transaction().message, [])
+    other = Keypair.from_seed(bytes([32]) * 32)
+    ix = Instruction(Pubkey.new_unique(), b'', [AccountMeta(other.pubkey(), True, False)])
+    if versioned:
+        msg = MessageV0.try_compile(payer.pubkey(), [ix], [], Hash.default())
+        full = VersionedTransaction(msg, [payer, other])
+        populate = VersionedTransaction.populate
+    else:
+        full = Transaction.new_signed_with_payer([ix], payer.pubkey(), [payer, other], Hash.default())
+        populate = Transaction.populate
+    return {
+        'valid': full,
+        'empty': populate(full.message, []),
+        'partial': populate(full.message, full.signatures[:1]),
+        'corrupt': populate(full.message, [Signature.default(), full.signatures[1]]),
+        'extra': populate(full.message, [*full.signatures, full.signatures[0]]),
+    }
 
 
 class ResearchSignatureGuardTests(unittest.TestCase):
-    def test_no_research_harness_keeps_a_bare_all_gate(self):
-        for relative in HARNESSES:
-            with self.subTest(module=relative):
-                self.assertNotIn(BARE_GATE, (ROOT / relative).read_text(encoding='utf-8'))
+    def test_complete_header_required_in_normal_and_optimized_guards(self):
+        for optimize in (0, 1, 2):
+            for relative in HARNESSES:
+                guard = extract(relative, 'require_signed', optimize)
+                for label, tx in vectors().items():
+                    with self.subTest(optimize=optimize, module=relative, vector=label):
+                        if label == 'valid':
+                            guard(tx)
+                        else:
+                            with self.assertRaises(AssertionError):
+                                guard(tx)
 
-    def test_a_stripped_vector_verifies_as_nothing(self):
-        self.assertEqual(list(stripped_transaction().verify_with_results()), [])
+    def test_partial_vector_really_verifies_only_its_present_signature(self):
+        tx = vectors()['partial']
+        self.assertEqual(tx.message.header.num_required_signatures, 2)
+        self.assertEqual(list(tx.verify_with_results()), [True])
 
-    def test_require_signed_rejects_a_transaction_without_signatures(self):
-        stripped = stripped_transaction()
-        for relative in HARNESSES:
-            with self.subTest(module=relative):
-                with self.assertRaises(AssertionError):
-                    guard_from(relative)(stripped)
+    def test_versioned_recorder_requires_all_header_signatures(self):
+        for optimize in (0, 1, 2):
+            guard = extract(VERSIONED, 'signatures_verified', optimize)
+            for versioned in (False, True):
+                for label, tx in vectors(versioned).items():
+                    with self.subTest(optimize=optimize, versioned=versioned, vector=label):
+                        self.assertIs(guard(tx), label == 'valid')
 
-    def test_require_signed_accepts_a_signed_transaction(self):
-        signed = signed_transaction()
-        self.assertTrue(signed.signatures)
-        for relative in HARNESSES:
-            with self.subTest(module=relative):
-                guard_from(relative)(signed)
+    def test_campaigns_refuse_optimized_python_before_imports(self):
+        for relative in (*HARNESSES, VERSIONED):
+            for flags, value in ((('-O',), None), (('-OO',), None), ((), '2')):
+                environment = dict(os.environ)
+                environment.pop('PYTHONOPTIMIZE', None)
+                if value is not None:
+                    environment['PYTHONOPTIMIZE'] = value
+                run = subprocess.run([sys.executable, '-B', *flags, str(ROOT / relative), '--help'],
+                                     env=environment, text=True, capture_output=True)
+                with self.subTest(module=relative, flags=flags, environment=value):
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertIn('requires normal Python', run.stderr)
+                    self.assertNotIn('Traceback', run.stderr)
 
 
 if __name__ == '__main__':

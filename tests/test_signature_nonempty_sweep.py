@@ -258,13 +258,14 @@ def rejects_branch(statements, helpers=frozenset()):
 
 
 def raises_through(node, helpers):
-    """A statement that cannot fall through: a raising helper or ``sys.exit``."""
+    """Only a statically bound local raising helper supplies a call proof."""
     if not isinstance(node, ast.Call):
         return False
     if isinstance(node.func, ast.Name):
         return node.func.id in helpers
-    return (isinstance(node.func, ast.Attribute) and node.func.attr == 'exit'
-            and isinstance(node.func.value, ast.Name) and node.func.value.id == 'sys')
+    return ('sys.exit' in helpers and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'exit' and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == 'sys')
 
 
 def raising_helpers(tree):
@@ -276,8 +277,36 @@ def raising_helpers(tree):
     that can return normally is still not a proof, and a name imported from
     elsewhere is never assumed to raise.
     """
-    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-    raising = set()
+    definitions = [node for node in ast.walk(tree)
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    rebound = {node.id for node in ast.walk(tree)
+               if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))}
+    rebound.update(node.arg for node in ast.walk(tree) if isinstance(node, ast.arg))
+    rebound.update(alias.asname or alias.name.split('.')[0]
+                   for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                   for alias in node.names)
+    functions = {node.name: node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and not node.decorator_list
+                 and node.name not in rebound
+                 and sum(d.name == node.name for d in definitions) == 1
+                 and not any(isinstance(child, (ast.Yield, ast.YieldFrom))
+                             for child in ast.walk(node))}
+    # A sys.exit call is usable only with an ordinary stable import. Explicit
+    # rebinding, parameter shadowing and exit replacement invalidate the proof.
+    sys_imports = [n for n in tree.body if isinstance(n, ast.Import)
+                   and any(a.name == 'sys' and a.asname is None for a in n.names)]
+    unstable_sys = any(
+        (isinstance(n, ast.Name) and n.id == 'sys' and isinstance(n.ctx, (ast.Store, ast.Del)))
+        or (isinstance(n, ast.arg) and n.arg == 'sys')
+        or (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+            and n.value.id == 'sys' and isinstance(n.ctx, (ast.Store, ast.Del)))
+        or (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == 'sys')
+        or (isinstance(n, (ast.Import, ast.ImportFrom))
+            and any((a.asname or a.name.split('.')[0]) == 'sys'
+                    and not (isinstance(n, ast.Import) and a.name == 'sys' and a.asname is None)
+                    for a in n.names))
+        for n in ast.walk(tree))
+    raising = {'sys.exit'} if sys_imports and not unstable_sys else set()
     changed = True
     while changed:                      # helpers that call other helpers
         changed = False
@@ -538,6 +567,27 @@ class SignatureGuardTests(unittest.TestCase):
         self.assertEqual(gates('from helpers import fail\n'
                                'if not all(tx.verify_with_results()):\n'
                                '    fail("unsigned")\n'), ['2'])
+
+    def test_unstable_or_lazy_helpers_supply_no_rejection_proof(self):
+        base = ('results=tx.verify_with_results()\n'
+                'if not results or not all(results):\n fail("unsigned")\n')
+        prefixes = (
+            'def fail(msg):\n yield 1\n raise SystemExit(msg)\n',
+            '@lambda f: (lambda *a: None)\ndef fail(msg):\n raise SystemExit(msg)\n',
+            'def fail(msg):\n raise SystemExit(msg)\nfail=lambda *a: None\n',
+            'def fail(msg):\n raise SystemExit(msg)\ndef fail(msg):\n return None\n',
+            'def fail(msg):\n sys.exit(msg)\n',
+        )
+        for prefix in prefixes:
+            self.assertTrue(list(unsigned_gates(ast.parse(prefix + base), '')))
+        shadowed = ('def fail(msg):\n raise SystemExit(msg)\n'
+                    'def check(tx, fail):\n results=tx.verify_with_results()\n'
+                    ' if not results or not all(results):\n  fail("unsigned")\n')
+        self.assertTrue(list(unsigned_gates(ast.parse(shadowed), '')))
+        stable = 'import sys\ndef fail(msg):\n sys.exit(msg)\n'
+        self.assertEqual(list(unsigned_gates(ast.parse(stable + base), '')), [])
+        for rebind in ('sys=object()\n', 'sys.exit=lambda *a: None\n'):
+            self.assertTrue(list(unsigned_gates(ast.parse(stable + rebind + base), '')))
 
     def test_the_sweep_accepts_only_a_non_empty_test(self):
         def gates(source):

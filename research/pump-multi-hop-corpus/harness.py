@@ -3,6 +3,9 @@
 Synthetic local accounts; ordinary test-owned verified outer signatures.
 No live traffic, fabricated PDA signatures or executable modification.
 """
+if not __debug__:
+    raise SystemExit('research evidence requires normal Python (assertions enabled)')
+
 from pathlib import Path
 import argparse,hashlib,json,sys
 P=Path(__file__).resolve().parent;ROOT=next(p for p in P.parents if (p/'evidence/original/pump/deployed.so').is_file())
@@ -11,8 +14,14 @@ import pump_amm_multi_hop_differential as h
 from pump_amm_admin_differential import Harness
 
 def require_signed(tx):
- """Reject a transaction carrying no signatures before verifying it."""
- assert tx.signatures and all(tx.verify_with_results())
+    """Require the complete nonempty header signature vector, also under -O."""
+    required = tx.message.header.num_required_signatures
+    if required <= 0 or len(tx.signatures) != required:
+        raise AssertionError('incomplete transaction signature vector')
+    results = tx.verify_with_results()
+    if not results or len(results) != required or not all(results):
+        raise AssertionError('transaction signature verification failed')
+
 
 def legacy_curve(sell,mutation=None):
  def setup(vm,metas):
