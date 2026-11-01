@@ -90,6 +90,19 @@ class FeesRetainedOutcomeTests(unittest.TestCase):
             with self.subTest(candidate=candidate), self.assertRaises(AssertionError):
                 validate('queries', document)
 
+    def test_a_suite_without_a_declared_case_count_is_rejected(self):
+        # Defaulting the count to len(cases) makes the check true by
+        # construction, so a producer that stopped declaring it still passed.
+        validate = self.consumer['validate_suite_receipt']
+        for name, suite in self.suites.items():
+            document = copy.deepcopy(suite)
+            del document['case_count']
+            with self.subTest(suite=name), self.assertRaisesRegex(AssertionError, 'case_count'):
+                validate(name, document)
+            document['case_count'] = len(document['cases']) + 1
+            with self.subTest(suite=name, inflated=True), self.assertRaisesRegex(AssertionError, 'case_count'):
+                validate(name, document)
+
     def test_only_event_lines_from_selected_producer_logs_are_compared(self):
         validate = self.consumer['validate_suite_receipt']
         for name in self.consumer['EVENT_LOG_SUITES']:
