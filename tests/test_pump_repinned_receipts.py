@@ -23,6 +23,12 @@ SUITES = (
 )
 
 
+# pump_fee_sweep_differential.py replays 504 cases and takes ~212 s alone on an
+# idle AMD EPYC 9354P, longer while sibling suites share the CPU; 180 s timed it
+# out on every run. Keep a bound so a hung suite still fails.
+SUITE_TIMEOUT = 600
+
+
 class RepinnedReceiptTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,7 +45,7 @@ class RepinnedReceiptTests(unittest.TestCase):
             receipt = output / (name + '.json')
             subprocess.run([sys.executable, str(ROOT / 'scripts' / script),
                             '--candidate', str(cls.first), '--output', str(receipt)],
-                           capture_output=True, text=True, check=True, timeout=180)
+                           capture_output=True, text=True, check=True, timeout=SUITE_TIMEOUT)
             raw = receipt.read_bytes()
             return name, json.loads(gzip.decompress(raw) if raw.startswith(b'\x1f\x8b') else raw)
 

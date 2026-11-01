@@ -25,6 +25,7 @@ sha = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 report = {
     'original_sha256': sha(r / 'evidence/original/pump_fees/deployed.so'),
     'candidate_sha256': sha(a.candidate),
+    'case_count': 1,
     'cases': [json.loads(pathlib.Path(__file__).with_suffix('.case.json').read_text())],
     'mismatches': [],
 }
@@ -43,6 +44,7 @@ sha = lambda path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 report = {{
     'original_sha256': sha(r / 'evidence/original/pump_fees/deployed.so'),
     'candidate_sha256': sha(a.candidate),
+    'case_count': 1,
     'cases': [json.loads(pathlib.Path(__file__).with_suffix('.case.json').read_text())],
     'mismatches': [],
 }}
