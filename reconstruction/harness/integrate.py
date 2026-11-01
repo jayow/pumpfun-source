@@ -2,19 +2,25 @@
 """Compose several delivered crate snapshots onto a base crate, build and score.
 
   integrate.py --name NAME --base-src <crate> --part <label>=<crate snapshot dir> [--part ...]
-               [--base-of <label>=<crate it was derived from>] [--no-build]
+               [--base-of <label>=<crate it was derived from>]
+               [--no-build | --fresh-control --expect-base-sha256 <digest>]
 
 Each part is turned into a patch against the crate it was derived from (default: --base-src),
 then applied in order. Empty-file transitions use Git patch metadata; ordinary text
 changes retain `patch -p2 --forward`. File and directory changes are checked
 together before changing the composed tree. Directory changes are applied after
 each file patch; a removal that still holds composed files is reported as retained.
-Rejects are reported and the part is skipped
-(the composition continues). The composed crate is built with fastbuild.py and scored.
+Rejects are reported and the part is skipped (the composition continues).
+Historical mode builds the composed crate and scores against the checked-in
+baseline. Explicit fresh-control mode instead builds the admitted base and
+composition in isolated cold workspaces, scores both against private copies of
+the same captured evidence, and refuses any lost membership.
 A build runs arbitrary build-script code, so the composed source, the scoring
 baseline and the scorer are rechecked after the build; a build that changes
 any of them is refused a score.
 Output: SC/integ/<NAME>/{src, parts/<label>.patch, rejects/, report.json}
+Fresh mode additionally retains fresh-control/{receipt.json, scoring inputs,
+build artifacts, score reports}; its receipt is the authoritative qualification.
 Names must be fresh; an earlier result is never overwritten.
 Part labels must be unique ignoring case so their retained patch names remain
 distinct on case-insensitive filesystems. Labels and composition names exclude
