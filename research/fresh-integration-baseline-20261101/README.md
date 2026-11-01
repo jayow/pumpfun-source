@@ -30,7 +30,7 @@ python -B research/fresh-integration-baseline-20261101/verify.py
 python -B reconstruction/harness/test_integrate_fresh_regression.py
 ```
 
-## Real pinned-toolchain qualification
+## Historical author pinned-toolchain qualification
 
 `real-qualification.json` is the compact, path-independent summary of one
 genuine paired build at the base revision above. Two independently delivered
@@ -47,6 +47,11 @@ acceptance. Full build workspaces, binaries, score reports, scoring inputs, and
 the 1,011,757-byte authoritative receipt remain under the immutable local output
 `reconstruction/integ/daybreak-fresh-real-638fce2a/` and are intentionally not
 checked into Git.
+
+This author receipt remains unchanged. It predates the reviewed source-only
+producer and independently re-scoring reader, so it is historical evidence and
+does not claim admission under the repaired helper closure. A new real
+qualification must retain its own fresh receipt and complete artifacts.
 
 Reproduce the summary after running the documented qualification command:
 

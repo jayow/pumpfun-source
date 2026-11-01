@@ -81,6 +81,7 @@ jobs:
               python -B reconstruction/harness/test_integrate_fresh_regression.py
               python -B reconstruction/harness/test_integrate_fresh_mode.py
               python -B reconstruction/harness/test_fresh_control.py
+              python -B reconstruction/harness/test_fresh_control_inputs.py
               python -B reconstruction/harness/test_verify_fresh_control.py
               python -B research/fresh-integration-baseline-20261101/verify.py
               python -B reconstruction/harness/test_integrate_failures.py

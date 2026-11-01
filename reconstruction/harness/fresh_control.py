@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import secrets
+import stat
+import types
 from pathlib import Path
 
 import build_score_pair
@@ -18,6 +20,39 @@ from source_inputs import assert_unchanged, snapshot
 
 H = Path(__file__).resolve().parent
 SC = H.parent
+
+
+def qualified_module(name):
+    path = H / "fresh_control_inputs.py"
+    raw = path.read_bytes()
+    admission = types.ModuleType("_fresh_control_admission")
+    admission.__file__ = str(path)
+    admission.__dict__["_ADMITTED_SOURCE_BYTES"] = raw
+    exec(compile(raw, str(path), "exec", dont_inherit=True), admission.__dict__)
+    return admission.load_context().load(name)
+
+
+def same_json(left, right):
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_json(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def valid_build(result):
+    build_score_pair.require_valid_build(result)
+    if (result.get("ok") is not True or result.get("runtime_valid") is not True
+            or not same_json(result.get("stack_warnings"), [])
+            or result.get("timed_out", False) is not False
+            or result.get("recipe") != "identity" or result.get("triple") != "sbpf-solana-solana"):
+        raise ValueError("build flags or recipe are not admissible")
+    for field in ("source_sha256", "unstripped_sha256", "candidate_sha256"):
+        value = result.get(field)
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError("build digest is not admissible: " + field)
 
 
 def sha256_file(path: Path) -> str:
@@ -78,11 +113,18 @@ def public_build(result: dict) -> dict:
 def artifact_inventory(root: Path) -> dict[str, dict]:
     result = {}
     for path in sorted(root.rglob("*")):
-        if path.is_file():
+        metadata = path.lstat()
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+            raise ValueError("linked retained artifacts are unsupported")
+        if stat.S_ISREG(metadata.st_mode):
             result[path.relative_to(root).as_posix()] = {
                 "bytes": path.stat().st_size,
                 "sha256": sha256_file(path),
             }
+        elif stat.S_ISDIR(metadata.st_mode):
+            result[path.relative_to(root).as_posix() + "/"] = {"directory": True}
+        else:
+            raise ValueError("special retained artifacts are unsupported")
     return result
 
 
@@ -115,10 +157,15 @@ def write_score(path: Path, image_sha256: str, windows: dict[int, dict]) -> None
 
 
 def _binding(scoring_inputs: Path, sdk: Path, hybrid: Path) -> dict:
+    if "_SOURCE_CONTEXT" in globals():
+        _SOURCE_CONTEXT.recheck()
     result = build_score_pair.bound_inputs(scoring_inputs, sdk, hybrid)
     result["fresh_control_tools"] = {
-        name: sha256_file(H / name) for name in ("fresh_control.py", "integrate.py")
+        name: sha256_file(H / name) for name in
+        ("fresh_control.py", "integrate.py", "verify_fresh_control.py", "fresh_control_inputs.py")
     }
+    if "_SOURCE_CONTEXT" in globals():
+        result["executed_python_source_sha256"] = dict(_SOURCE_CONTEXT.hashes)
     return result
 
 
@@ -145,6 +192,14 @@ def run_pair(
     Expected build/score rejection is returned as an unaccepted receipt;
     preflight output/source errors are raised before a misleading receipt exists.
     """
+    if "_SOURCE_CONTEXT" not in globals():
+        return qualified_module("fresh_control").run_pair(
+            base_source, candidate_source, output, sdk=sdk, hybrid=hybrid, timeout=timeout)
+    _SOURCE_CONTEXT.recheck()
+    for path in (base_source, candidate_source, output):
+        path = Path(path)
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+            raise ValueError("linked fresh-control inputs or output are unsupported")
     base_source = Path(base_source).resolve(strict=True)
     candidate_source = Path(candidate_source).resolve(strict=True)
     output = Path(output).resolve()
@@ -202,18 +257,15 @@ def run_pair(
 
         score_windows = {}
         for side, source in (("base", base_source), ("candidate", candidate_source)):
-            result = fastbuild.build(
-                source,
-                output / f"{side}-work",
-                output / f"{side}-build",
-                quiet=True,
-                recipe="identity",
-                timeout=timeout,
-            )
+            with _SOURCE_CONTEXT.hook_cache():
+                result = fastbuild.build(
+                    source, output / f"{side}-work", output / f"{side}-build",
+                    quiet=True, recipe="identity", timeout=timeout,
+                )
             receipt["builds"][side] = public_build(result)
             publish_json(receipt_path, receipt)
             try:
-                build_score_pair.require_valid_build(result)
+                valid_build(result)
             except ValueError as error:
                 receipt["qualification"] = _reject(f"{side}_build_invalid", str(error))
                 retain_artifacts(receipt, output)
@@ -256,6 +308,12 @@ def run_pair(
 
         for side, source in (("base", base_source), ("candidate", candidate_source)):
             assert_unchanged(source, sources[side], phase="paired qualification")
+            for artifact, field in (("unstripped.so", "unstripped_sha256"),
+                                    ("candidate.so", "candidate_sha256")):
+                if sha256_file(output / f"{side}-build" / artifact) != receipt["builds"][side][field]:
+                    raise ValueError(side + " earlier build artifact changed")
+            if sha256_file(output / f"{side}-score.json") != receipt["scores"][side]["report_sha256"]:
+                raise ValueError(side + " earlier score report changed")
         if _binding(scoring_inputs, sdk, hybrid) != bound:
             receipt["qualification"] = _reject("toolchain_or_scorer_input_mutation")
         else:

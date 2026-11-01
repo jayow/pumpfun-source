@@ -53,8 +53,14 @@ def build_source(*args, **kwargs):
 def run_fresh_control(*args, **kwargs):
     # Preserve --no-build and historical-mode portability: fresh_control imports
     # the compiler coordinator and is loaded only for the explicit paired mode.
-    import fresh_control
-    return fresh_control.run_pair(*args, **kwargs)
+    import types
+    path = H / 'fresh_control_inputs.py'
+    raw = path.read_bytes()
+    admission = types.ModuleType('_fresh_control_admission')
+    admission.__file__ = str(path)
+    admission.__dict__['_ADMITTED_SOURCE_BYTES'] = raw
+    exec(compile(raw, str(path), 'exec', dont_inherit=True), admission.__dict__)
+    return admission.load_context().load('fresh_control').run_pair(*args, **kwargs)
 
 
 def publish_report(path, report):

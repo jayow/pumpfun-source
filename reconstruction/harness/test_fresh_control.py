@@ -12,7 +12,10 @@ from unittest import mock
 H = Path(__file__).resolve().parent
 sys.path.insert(0, str(H))
 
-import fresh_control
+from fresh_control_inputs import load_context
+
+CONTEXT = load_context()
+fresh_control = CONTEXT.load("fresh_control")
 
 
 def crate(path: Path, value: int) -> Path:
@@ -257,6 +260,48 @@ class FreshControlTests(unittest.TestCase):
         loaded = json.loads((self.root / "out/receipt.json").read_text())
         self.assertEqual(loaded, receipt)
         self.assertTrue((self.root / "out/receipt.json").read_bytes().endswith(b"\n"))
+
+    def test_second_build_cannot_change_an_earlier_binary_or_score(self):
+        for name in ("base-build/unstripped.so", "base-score.json"):
+            with self.subTest(name=name):
+                def mutate(source, work, output, **kwargs):
+                    result = self.fake_build(source, work, output, **kwargs)
+                    if Path(source) == self.candidate.resolve():
+                        (output.parent / name).write_bytes(b"changed by second build")
+                    return result
+                fresh_control.fastbuild.build.side_effect = mutate
+                receipt = self.run_pair(name.replace("/", "-"))
+                self.assertFalse(receipt["qualification"]["accepted"])
+                self.assertIn("earlier", receipt["qualification"]["detail"])
+
+    def test_truthy_build_flags_are_not_successful_builds(self):
+        for field, value in (("ok", 1), ("runtime_valid", "false"), ("timed_out", True)):
+            with self.subTest(field=field):
+                def bad_flags(source, work, output, **kwargs):
+                    result = self.fake_build(source, work, output, **kwargs)
+                    result[field] = value
+                    return result
+                fresh_control.fastbuild.build.side_effect = bad_flags
+                receipt = self.run_pair(field)
+                self.assertEqual(receipt["qualification"]["rejection_reasons"], ["base_build_invalid"])
+
+    def test_source_root_link_is_refused_before_a_build(self):
+        alias = self.root / "linked-source"
+        alias.symlink_to(self.base, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "linked"):
+            fresh_control.run_pair(alias, self.candidate, self.root / "linked-out")
+        self.assertEqual(self.build_order, [])
+
+    def test_external_hook_cache_injection_rejects_build(self):
+        import os
+        def inject(source, work, output, **kwargs):
+            result = self.fake_build(source, work, output, **kwargs)
+            Path(os.environ["PYTHONPYCACHEPREFIX"], "injected.pyc").write_bytes(b"cached code")
+            return result
+        fresh_control.fastbuild.build.side_effect = inject
+        receipt = self.run_pair()
+        self.assertFalse(receipt["qualification"]["accepted"])
+        self.assertIn("bytecode cache", receipt["qualification"]["detail"])
 
     def test_atomic_fresh_receipt_publication_preserves_previous_document(self):
         target = self.root / "receipt.json"

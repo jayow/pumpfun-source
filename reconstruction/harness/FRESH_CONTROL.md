@@ -89,9 +89,23 @@ python -B reconstruction/harness/verify_fresh_control.py \
 ```
 
 The verifier does not trust the producer's acceptance boolean or comparison. It
-loads both score reports through `compare_scores.py` and derives the decision
-again. For a standalone pair outside `reconstruction/integ`, supply
+loads both score reports through `compare_scores.py`, independently re-scores
+both actual unstripped ELF images with the admitted official scorer, and checks
+every retained membership and symbol row before deriving the decision again.
+Boolean and integer claims use exact JSON types. Receipt bytes, source snapshots,
+scorer inputs and retained artifacts are checked again after verification.
+Links, special files and unrecorded directory membership are refused.
+For a standalone pair outside `reconstruction/integ`, supply
 `--base-source` and `--candidate-source` explicitly.
+
+The producer and reader execute a private graph of captured local Python source
+bytes, including lazy imports. Timestamp-valid bytecode caches cannot replace
+those modules, and the source graph is rechecked before and after execution.
+External compiler/linker Python hooks receive a private empty cache prefix and
+bytecode writes are disabled; cache changes reject the build. Both earlier ELF
+images and score files are rechecked after the second build, so later build code
+cannot silently alter an already-scored artifact. Canonical Python module entries
+are not replaced by this private graph.
 
 This mode intentionally performs two cold Pump builds and should be scheduled as
 the only heavy SBF build on a host. Saved score summaries cannot substitute for
