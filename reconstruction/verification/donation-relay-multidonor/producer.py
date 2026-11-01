@@ -177,6 +177,11 @@ class Pair:
             vm.add_program_from_file(fixture.ATA, associated)
             for address, value_account in value.accounts.items():
                 vm.set_account(address, value_account)
+            # Each persistent case receives a disjoint deterministic blockhash
+            # range. This preserves replay determinism while proving that no
+            # transaction identity is reused across independently seeded cases.
+            for _ in range(CASE_NAMES.index(value.case) * 100):
+                vm.expire_blockhash()
             self.vms[side] = vm
 
     def add_fixture_accounts(self, addresses: set[Pubkey]) -> None:
@@ -409,6 +414,7 @@ def run_case(name: str, original: Path, candidate: Path, token: Path, associated
                         for name, donor in value.donors.items()},
         },
         "initial_balances": spec.get("balances", {}),
+        "plan": spec["steps"],
         "expected_errors": [step["error"] for step in spec["steps"]],
         "final_state": steps[-1]["original_state"],
         "steps": steps,
@@ -447,6 +453,9 @@ def execute(root: Path, candidate: Path, output: Path) -> bool:
     blockhashes = [step["recent_blockhash"] for step in transactions]
     signatures = [signature for step in transactions for signature in step["signatures"]]
     source_files = sources
+    fixture_evidence = [{key: case[key] for key in
+                         ("name", "fixture", "initial_balances", "plan", "expected_errors")}
+                        for case in cases]
     report = {
         "schema": "donation-relay-multidonor-v1",
         "program": str(fixture.RELAY),
@@ -468,6 +477,8 @@ def execute(root: Path, candidate: Path, output: Path) -> bool:
         }, "signature_verification": True, "blockhash_verification": True,
             "public_rpc": False},
         "case_count": len(cases),
+        "fixture_identity_sha256": fixture.sha(json.dumps(
+            fixture_evidence, sort_keys=True, separators=(",", ":")).encode()),
         "transaction_count": len(transactions),
         "individual_signature_count": len(signatures),
         "transaction_identity": {
