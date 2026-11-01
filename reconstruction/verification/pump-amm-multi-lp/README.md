@@ -138,3 +138,11 @@ Finite signed execution does not establish broad semantic equivalence, compute
 unit equality, or new whole-program byte identity. Token-2022 coverage uses the
 plain mint/account layout in the named fixture and does not cover arbitrary
 extensions. This packet does not change the repository completion percentage.
+
+The repaired v2 selected report is `results/report.json.gz` (SHA-256
+`5c30dc80f6588ae323d445b7a26f2503a68336bd797167949e41262fe24377a7`). Its separate original
+control is `results/original-control.json.gz`; `results/qualification.json` records
+exact input/code pins, 56 passing focused methods plus the final pure replay-context
+regression, seven repaired false-admission controls, and the independent reader audit.
+The selected run and fresh replay each observed nine equal cases and 65 genuine
+signed transactions per image, with 122 required signatures verified per image.
