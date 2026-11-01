@@ -159,6 +159,33 @@ class FreshControlTests(unittest.TestCase):
         self.assertFalse(receipt["qualification"]["accepted"])
         self.assertEqual(receipt["qualification"]["rejection_reasons"], ["candidate_build_invalid"])
         self.assertIn("candidate-build/build.log", receipt["artifacts"])
+        self.assertNotIn("receipt.json", receipt["artifacts"])
+
+    def test_build_source_digest_mismatch_is_rejected(self):
+        def wrong_source(source, work, output, **kwargs):
+            result = self.fake_build(source, work, output, **kwargs)
+            if Path(source) == self.candidate.resolve():
+                result["source_sha256"] = "0" * 64
+            return result
+
+        fresh_control.fastbuild.build.side_effect = wrong_source
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"],
+                         ["candidate_build_source_mismatch"])
+        self.assertNotIn("receipt.json", receipt["artifacts"])
+
+    def test_build_artifact_digest_mismatch_is_rejected(self):
+        def wrong_artifact(source, work, output, **kwargs):
+            result = self.fake_build(source, work, output, **kwargs)
+            if Path(source) == self.base.resolve():
+                result["candidate_sha256"] = "f" * 64
+            return result
+
+        fresh_control.fastbuild.build.side_effect = wrong_artifact
+        receipt = self.run_pair()
+        self.assertEqual(receipt["qualification"]["rejection_reasons"],
+                         ["base_build_artifact_mismatch"])
+        self.assertNotIn("receipt.json", receipt["artifacts"])
 
     def test_stack_invalid_build_is_never_scored(self):
         def invalid_stack(source, work, output, **kwargs):

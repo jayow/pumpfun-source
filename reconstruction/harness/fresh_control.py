@@ -86,6 +86,12 @@ def artifact_inventory(root: Path) -> dict[str, dict]:
     return result
 
 
+def retain_artifacts(receipt: dict, root: Path) -> None:
+    """Bind retained artifacts without attempting to hash the receipt itself."""
+    receipt["artifacts"] = artifact_inventory(root)
+    receipt["artifacts"].pop("receipt.json", None)
+
+
 def score_summary(windows: dict[int, dict]) -> dict:
     ambiguous = sorted(start for start, row in windows.items() if len(row.get("symbols", [])) > 1)
     return {
@@ -210,12 +216,12 @@ def run_pair(
                 build_score_pair.require_valid_build(result)
             except ValueError as error:
                 receipt["qualification"] = _reject(f"{side}_build_invalid", str(error))
-                receipt["artifacts"] = artifact_inventory(output)
+                retain_artifacts(receipt, output)
                 publish_json(receipt_path, receipt)
                 return receipt
             if result.get("source_sha256") != sources[side]["sha256"]:
                 receipt["qualification"] = _reject(f"{side}_build_source_mismatch")
-                receipt["artifacts"] = artifact_inventory(output)
+                retain_artifacts(receipt, output)
                 publish_json(receipt_path, receipt)
                 return receipt
             for artifact, field in (("unstripped.so", "unstripped_sha256"),
@@ -223,13 +229,13 @@ def run_pair(
                 path = output / f"{side}-build" / artifact
                 if not path.is_file() or sha256_file(path) != result.get(field):
                     receipt["qualification"] = _reject(f"{side}_build_artifact_mismatch")
-                    receipt["artifacts"] = artifact_inventory(output)
+                    retain_artifacts(receipt, output)
                     publish_json(receipt_path, receipt)
                     return receipt
             assert_unchanged(source, sources[side], phase=f"{side} build")
             if _binding(scoring_inputs, sdk, hybrid) != bound:
                 receipt["qualification"] = _reject("toolchain_or_scorer_input_mutation")
-                receipt["artifacts"] = artifact_inventory(output)
+                retain_artifacts(receipt, output)
                 publish_json(receipt_path, receipt)
                 return receipt
 
@@ -275,16 +281,13 @@ def run_pair(
                 "source_inputs_unchanged": True,
                 "toolchain_and_scorer_inputs_unchanged": True,
             }
-        receipt["artifacts"] = artifact_inventory(output)
-        # Do not include receipt.json in its own hash inventory.
-        receipt["artifacts"].pop("receipt.json", None)
+        retain_artifacts(receipt, output)
         publish_json(receipt_path, receipt)
         return receipt
     except Exception as error:
         receipt["qualification"] = _reject("infrastructure_failure", str(error))
         receipt["error_type"] = type(error).__name__
-        receipt["artifacts"] = artifact_inventory(output)
-        receipt["artifacts"].pop("receipt.json", None)
+        retain_artifacts(receipt, output)
         publish_json(receipt_path, receipt)
         return receipt
     finally:
