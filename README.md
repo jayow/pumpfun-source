@@ -24,21 +24,26 @@ those programs. There is no frontend, backend, SDK or off-chain service code.
 
 **Verified checkpoint progress — 2026-11-01**
 
-| Program | Matched windows | Matched % | Raw-equal bodies | Normalized only | Unmatched | Whole meaningful ELF equal |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Pump Main |1,034/1,035|99.90%|1,034|0|1|No|
-| PumpSwap / AMM |785/785|100.0%|785|0|0|**Yes**|
-| Fees |585/585|100.0%|585|0|0|**Yes**|
-| Mayhem |441/441|100.0%|441|0|0|**Yes**|
-| Donation Relay |492/492|100.0%|492|0|0|**Yes**|
-| **Total** |**3,337/3,338**|**99.97%**|**3,337**|**0**|**1**|**4/5**|
+**Code-byte completion: 99.47% — 5,185,728 of 5,213,128 bytes matched.**
+**27,400 bytes remain** in one unmatched window. Matched-window completion is
+**99.97% (3,337/3,338)**.
 
-Matched windows cover **5,185,728/5,213,128 code bytes (99.47%)**.
+| Program | Matched / total code bytes | Code bytes matched | Matched windows | Windows matched | Whole meaningful ELF equal |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Pump Main |1,764,808/1,792,208|98.47%|1,034/1,035|99.90%|No|
+| PumpSwap / AMM |1,162,040/1,162,040|100.00%|785/785|100.00%|**Yes**|
+| Fees |799,648/799,648|100.00%|585/585|100.00%|**Yes**|
+| Mayhem |706,744/706,744|100.00%|441/441|100.00%|**Yes**|
+| Donation Relay |752,488/752,488|100.00%|492/492|100.00%|**Yes**|
+| **Total** |**5,185,728/5,213,128**|**99.47%**|**3,337/3,338**|**99.97%**|**4/5**|
+
+All **3,337 matched windows are raw-equal**; there are no normalized-only matches.
 The latest fresh Pump Main identity build preserves all matched windows, with
 no raw or normalized losses. Only `admin_cto::execute` remains unmatched
 (27,400 bytes); its instruction-token similarity is **70.021%**, adding **4
 matched tokens** since CP112 (69.901%). Positional byte differences change from
-3,173 to **3,189**; no new exact window is claimed.
+3,173 to **3,189**; no new exact window is claimed. Partial token similarity is
+excluded from the completed-byte total.
 All **388 targeted signed synthetic admin-CTO pairs** pass for this exact new
 image, with **776 nonempty signature vectors** verified. A separate signed
 cross-program lifecycle and independent replay also pass. This is bounded
