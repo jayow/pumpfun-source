@@ -47,6 +47,9 @@ class StubMessage:
 
 class StubTransaction:
     message = StubMessage()
+    # The verifier requires a non-empty signature vector before it trusts
+    # verify_with_results; the stub carries a placeholder one.
+    signatures = [b"stub-signature"]
     @staticmethod
     def from_bytes(raw):
         return StubTransaction()

@@ -23,18 +23,28 @@ class BuildHarnessEncodingTests(unittest.TestCase):
                 source = (HARNESS / name).read_text(encoding='utf-8')
                 for node in ast.walk(ast.parse(source)):
                     if not (isinstance(node, ast.Call)
-                            and isinstance(node.func, ast.Attribute)
-                            and node.func.attr == 'write_text'):
+                            and isinstance(node.func, ast.Attribute)):
                         continue
                     keywords = {keyword.arg: keyword.value for keyword in node.keywords}
                     where = f'{name}:{node.lineno}'
+                    # Report writers use either write_text or an encoding- and
+                    # newline-pinned open() (atomic staging); both must pin
+                    # UTF-8 LF. Encoding-only append logging does not set a
+                    # line ending and is not counted here.
+                    pinned_open = (node.func.attr == 'open'
+                                   and isinstance(keywords.get('encoding'), ast.Constant)
+                                   and keywords['encoding'].value == 'utf-8'
+                                   and isinstance(keywords.get('newline'), ast.Constant)
+                                   and keywords['newline'].value == '\n')
+                    if node.func.attr != 'write_text' and not pinned_open:
+                        continue
                     self.assertIn('encoding', keywords, where)
                     self.assertEqual(keywords['encoding'].value, 'utf-8', where)
                     self.assertIn('newline', keywords, where)
                     self.assertEqual(keywords['newline'].value, '\n', where)
                     checked += 1
-        # The integration report, its three patch diagnostics, the staged
-        # manifests and the build log.
+        # The integration report (published through its atomic open() staging),
+        # its three patch diagnostics, the staged manifests and the build log.
         self.assertGreaterEqual(checked, 7, 'build-harness evidence writers disappeared')
 
 
