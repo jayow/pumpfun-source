@@ -16,9 +16,9 @@ import test_fresh_control
 import verify_fresh_control
 
 
-class VerifyFreshControlTests(test_fresh_control.FreshControlTests):
+class VerifyFreshControlTests(unittest.TestCase):
     def setUp(self):
-        super().setUp()
+        test_fresh_control.FreshControlTests.setUp(self)
         # The producer's mocked binding is the verifier's admitted provenance.
         self.verifier_binding = mock.patch.object(
             verify_fresh_control.fresh_control, "_binding",
@@ -26,6 +26,8 @@ class VerifyFreshControlTests(test_fresh_control.FreshControlTests):
         )
         self.verifier_binding.start()
         self.addCleanup(self.verifier_binding.stop)
+
+    run_pair = test_fresh_control.FreshControlTests.run_pair
 
     def verify(self):
         return verify_fresh_control.verify(
