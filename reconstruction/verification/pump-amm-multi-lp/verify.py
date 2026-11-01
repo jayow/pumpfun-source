@@ -566,14 +566,23 @@ def main():
     report = read(args.report, raw=raw)
     problems = verify(report, args.candidate)
     replay_equal = None
+    replay_context = None
     if args.replay and not problems:
-        replay_equal = A.same_json(L.run_suite(args.candidate), report)
+        replayed = L.run_suite(args.candidate)
+        replay_context = replayed["upstream_commit"]
+        # A later evidence commit or merge changes descriptive Git context;
+        # actual code/data/image identities remain exact admission gates.
+        replay_equal = A.same_json({k: v for k, v in replayed.items() if k != "upstream_commit"},
+                                  {k: v for k, v in report.items() if k != "upstream_commit"})
         if not replay_equal:
             problems.append("deterministic_replay")
     if A.regular_bytes(args.report) != raw:
         problems.append("report_changed_during_verification")
     print(json.dumps({"verified": not problems, "problems": sorted(set(problems)),
                       "deterministic_replay_equal": replay_equal,
+                      "report_upstream_commit": report.get("upstream_commit") if type(report) is dict else None,
+                      "replay_upstream_commit": replay_context,
+                      "replay_comparison_scope": "all fields except descriptive upstream_commit; ancestry and exact input/image bindings remain required",
                       "scope": "fixed canonical signed receipts; supplied binary only, no source-build or whole-program-equivalence claim"}, indent=2))
     return bool(problems)
 

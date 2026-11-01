@@ -299,6 +299,27 @@ class VerifierTests(unittest.TestCase):
 
 
 class SourceAndCliAdmissionTests(unittest.TestCase):
+    def test_cli_replay_keeps_historical_git_context_separate_from_observations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'report.json'
+            report = {'upstream_commit': 'a' * 40, 'observation': {'exact': 7}}
+            path.write_text(json.dumps(report))
+            for changed in (False, True):
+                replayed = {'upstream_commit': 'b' * 40, 'observation': {'exact': 8 if changed else 7}}
+                output = io.StringIO()
+                with self.subTest(changed_observation=changed), \
+                        mock.patch.object(sys, 'argv', ['verify.py', '--report', str(path), '--candidate', 'unused.so', '--replay']), \
+                        mock.patch.object(verify, 'verify', return_value=[]), \
+                        mock.patch.object(lifecycle, 'run_suite', return_value=replayed), \
+                        contextlib.redirect_stdout(output):
+                    status = verify.main()
+                result = json.loads(output.getvalue())
+                self.assertEqual(status, changed)
+                self.assertEqual(result['report_upstream_commit'], 'a' * 40)
+                self.assertEqual(result['replay_upstream_commit'], 'b' * 40)
+                self.assertEqual(result['deterministic_replay_equal'], not changed)
+                self.assertEqual(result['verified'], not changed)
+
     def cohort(self, root):
         for relative in verify.A.snapshot_inputs():
             target = root / relative
