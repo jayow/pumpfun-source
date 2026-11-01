@@ -62,7 +62,10 @@ def assert_regression_receipt(receipt, expected_cases):
     cases = receipt.get("cases")
     if isinstance(cases, list):
         assert len(cases) == expected_cases
-        assert receipt.get("case_count", len(cases)) == len(cases)
+        # A default of len(cases) compares that list with itself, so a receipt
+        # that stopped declaring its header still passed the agreement check.
+        assert "case_count" in receipt, "a case list requires a declared case_count"
+        assert receipt["case_count"] == len(cases)
     else:
         assert receipt.get("case_count", cases) == expected_cases
     assert receipt["mismatches"] in ([], 0)
