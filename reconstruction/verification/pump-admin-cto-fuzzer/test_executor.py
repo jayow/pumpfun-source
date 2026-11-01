@@ -3,6 +3,7 @@ import base64
 import copy
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -98,6 +99,18 @@ class ExecutorTests(unittest.TestCase):
         raw[-1] ^= 1
         run["receipts"][0]["transaction_base64"] = base64.b64encode(raw).decode()
         self.assertTrue(E.validate_run(run))
+
+    def test_extension_panic_is_infrastructure_but_interrupt_propagates(self):
+        class ExtensionPanic(BaseException):
+            pass
+
+        with mock.patch.object(E, "run_image", side_effect=ExtensionPanic("bounded panic")):
+            result = E.execute_case(fixture_case(), self.original, self.original)
+        self.assertEqual(result["classification"], "infrastructure_failure")
+        self.assertIn("ExtensionPanic", result["reason"])
+        with mock.patch.object(E, "run_image", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                E.execute_case(fixture_case(), self.original, self.original)
 
 
 if __name__ == "__main__":

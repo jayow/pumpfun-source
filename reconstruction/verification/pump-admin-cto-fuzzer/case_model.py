@@ -68,8 +68,8 @@ class SeedStream:
 def derive_case_seed(root_seed: int, index: int) -> int:
     if type(root_seed) is not int or not 0 <= root_seed < 2**128:
         raise ValueError("root seed must be an unsigned 128-bit integer")
-    if type(index) is not int or index < 0:
-        raise ValueError("case index must be nonnegative")
+    if type(index) is not int or not 0 <= index < 2**64:
+        raise ValueError("case index must be an unsigned 64-bit integer")
     raw = root_seed.to_bytes(16, "big") + index.to_bytes(8, "big")
     return int.from_bytes(hashlib.sha256(b"pump-admin-cto-fuzz-v1" + raw).digest()[:16], "big")
 

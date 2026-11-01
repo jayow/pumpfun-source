@@ -47,6 +47,9 @@ class CaseModelTests(unittest.TestCase):
         for value in (-1, 2**128, True):
             with self.assertRaises(ValueError):
                 model.generate_case(value, 0)
+        for index in (-1, 2**64, True):
+            with self.assertRaises(ValueError):
+                model.generate_case(1, index)
         for value in (0, 10001, True):
             with self.assertRaises(ValueError):
                 model.generate_corpus(0, value)

@@ -354,7 +354,9 @@ def execute_case(case: dict, original: Path, candidate: Path, images=None) -> di
     except UnsupportedFixture as error:
         result.update(classification="unsupported_fixture", reason=str(error))
         return result
-    except Exception as error:  # retained in the report; callers must not count it as equivalence
+    except BaseException as error:  # PyO3 panic exceptions intentionally inherit BaseException.
+        if isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
         result.update(classification="infrastructure_failure",
                       reason=f"{type(error).__name__}: {error}")
         return result
