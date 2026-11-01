@@ -1,6 +1,6 @@
 # Independent v2 admission qualification — 2026-11-01
 
-The repaired implementation at `5da27f72956ff39e715cf5ed40f04764cac163ff`
+The repaired implementation at `3b424eb0efca63d417852dc97284857afd6f60ed`
 was qualified separately from the author's historical v1 record below. The
 original and candidate images retain the SHA-256 identities listed there;
 this tooling review reused the already qualified candidate bytes and did not
@@ -20,16 +20,20 @@ positive and adversarial regression cases.
 
 The v2 summary SHA-256 values are:
 
-- control: `e6abf6b01de65f5236ef5b0fc5c752c31d187d281b4844a7d7303e97280dfd58`;
-- candidate: `7c9876e0b6f02a59fd125907e0636654c45f52d03a7353d8c7d68724b890d026`.
+- control: `3f9b63a05765f8002599669ede4a8fce861d80d6d78549e47a6011c0e4b246ab`;
+- candidate: `5dd3cde499281958442e42cc539ac35822a8e180926541ee2c49f3e866ec185e`.
 
-The counted CI command passed 69 tests with zero skips. Regressions cover
+The counted CI command passed 71 tests with zero skips. Regressions cover
 strict fixture types, fully resealed signed unrelated messages, integer
 signature flags, omitted/foreign state, empty runs, fabricated unsupported
 exclusions, zero-case corpora, false aggregates, extra manifest members,
 duplicate JSON keys, links, and input/report mutation. An independent model
 check retained byte-identical generated corpora for 640 cases across five
 seeds and rejected 20 previously admitted malformed cases.
+An actual dependency-bootstrap edit control also reproduced an early v2
+self-source timing gap, then proved the final producer rejects the edited
+disk bytes while retaining the SHA-256 of its actual compiled source. That
+control and nonfinite JSON rejection also passed with `-O` and `-OO`.
 
 Actual producer-generation and reader CLIs also passed under normal Python,
 `-O`, and `-OO` with executable timestamp caches planted for the lifecycle and
@@ -39,7 +43,9 @@ admitted all 16 retained candidate case results. These cache checks performed
 no additional program executions.
 
 Detailed reports and proof logs are retained under the local pass111 artifact
-directory `tools/4056/{control16,candidate16}`. They bind ten declared tool/data
+directory `tools/4056/{control16-final,candidate16-final}`. The earlier
+`5da27f7` campaign reports remain separately retained and are not resealed.
+The final reports bind ten declared tool/data
 inputs, all captured dependency images, the exact semantic artifact census,
 canonical case/message/constructor state, and pre/post input bytes. These are
 finite synthetic observations, not whole-program equivalence or increased
