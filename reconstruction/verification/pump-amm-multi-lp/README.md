@@ -32,7 +32,7 @@ meaningful-ELF checkpoint is independent of this runtime evidence; this
 package does not change its bytecode completion percentage.
 
 The discovery audit was refreshed at upstream commit
-`747aae62863ecb052069999be020a7f49943e6a0`.  Relevant existing coverage:
+`747aae62864e490ac2142906c54fe039a8e9ae66`.  Relevant existing coverage:
 
 - `scripts/pump_amm_create_differential.py`: real pool/LP/vault creation, one
   creator per reset fixture.
@@ -111,7 +111,7 @@ bounded to the fixed nine-case corpus.
 ## Qualification and limitation
 
 The retained report is `qualification/report.json.gz` (SHA-256
-`bd7f81de43c5c7c1461f23791b04dde1a757fa024570ffc1e3c9e7c7b30365a3`).
+`c652fdc074caaff209e24c79babda3bf3078d2d99fc80707fb841615b31fe58f`).
 It binds source manifest
 `da44d85497928a0e21d69c4162dfd6ad4d2caee1047bf9574073db4bb67addf1`
 to candidate
