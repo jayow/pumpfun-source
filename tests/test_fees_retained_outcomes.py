@@ -5,6 +5,7 @@ import gzip
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,23 @@ class FeesRetainedOutcomeTests(unittest.TestCase):
             document['case_count'] = len(document['cases']) + 1
             with self.subTest(suite=name, inflated=True), self.assertRaisesRegex(AssertionError, 'case_count'):
                 validate(name, document)
+
+    def test_aggregate_cli_rejects_undeclared_counts_before_replacing_output(self):
+        # These adapters only return retained bytes; none executes a VM suite.
+        spec = importlib.util.spec_from_file_location('fees_count_receipt_replay', PACKET / 'replay.py')
+        replay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(replay)
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus = Path(temporary) / 'missing-count.json.gz'
+            document = copy.deepcopy({'suites': self.suites})
+            for suite in document['suites'].values():
+                del suite['case_count']
+            corpus.write_bytes(gzip.compress(json.dumps(document).encode(), mtime=0))
+            result = replay.replay(ROOT, corpus, 'control')
+            self.assertNotEqual(result['exit_code'], 0, result)
+            self.assertIn('case_count must be declared', result['stderr'])
+            self.assertTrue(result['prior_output_preserved'])
+            self.assertIsNone(result['published_cases'])
 
     def test_only_event_lines_from_selected_producer_logs_are_compared(self):
         validate = self.consumer['validate_suite_receipt']
