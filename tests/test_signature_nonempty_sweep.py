@@ -299,7 +299,8 @@ def raising_helpers(tree):
         (isinstance(n, ast.Name) and n.id == 'sys' and isinstance(n.ctx, (ast.Store, ast.Del)))
         or (isinstance(n, ast.arg) and n.arg == 'sys')
         or (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
-            and n.value.id == 'sys' and isinstance(n.ctx, (ast.Store, ast.Del)))
+            and n.value.id == 'sys' and n.attr == 'exit'
+            and isinstance(n.ctx, (ast.Store, ast.Del)))
         or (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == 'sys')
         or (isinstance(n, (ast.Import, ast.ImportFrom))
             and any((a.asname or a.name.split('.')[0]) == 'sys'
