@@ -28,8 +28,8 @@ PRODUCERS = (
 )
 
 
-def _git_sha() -> str:
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], cwd=ROOT, check=True,
                           stdout=subprocess.PIPE, text=True).stdout.strip()
 
 
@@ -138,7 +138,9 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
             executed = [row for row in results if "original" in row]
             control = negative_controls(executed[0]) if executed else {"available": False}
             summary = {
-                "schema": SCHEMA, "upstream_sha": _git_sha(), "seed": seed, "case_count": count,
+                "schema": SCHEMA, "tested_git_sha": _git("rev-parse", "HEAD"),
+                "upstream_sha": _git("merge-base", "HEAD", "origin/main"),
+                "seed": seed, "case_count": count,
                 "case_manifest_sha256": attempt["case_manifest_sha256"],
                 "program_sha256": {"original": snapshot.hashes["pump_original"],
                                    "candidate": snapshot.hashes["pump_candidate"]},
