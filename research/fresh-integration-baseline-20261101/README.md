@@ -29,3 +29,29 @@ cmp research/fresh-integration-baseline-20261101/results.json \
 python -B research/fresh-integration-baseline-20261101/verify.py
 python -B reconstruction/harness/test_integrate_fresh_regression.py
 ```
+
+## Real pinned-toolchain qualification
+
+`real-qualification.json` is the compact, path-independent summary of one
+genuine paired build at the base revision above. Two independently delivered
+parts added different unreferenced fixture files to temporary Pump snapshots.
+Both were derived from and composed onto the exact admitted upstream source;
+neither changes the compiled program. The run used the authenticated v1.44 SDK,
+hybrid compiler, captured Pump ELF, and maintained 1,035-window inventory.
+
+Both cold builds succeeded with valid stack reports and produced the same
+stripped and unstripped ELF hashes. Each score contained 1,034 normalized and
+1,034 raw matches, with zero gained, lost, missing, added, or resized windows.
+The independent verifier re-hashed all 3,887 retained artifacts and recomputed
+acceptance. Full build workspaces, binaries, score reports, scoring inputs, and
+the 1,011,757-byte authoritative receipt remain under the immutable local output
+`reconstruction/integ/daybreak-fresh-real-638fce2a/` and are intentionally not
+checked into Git.
+
+Reproduce the summary after running the documented qualification command:
+
+```sh
+python -B research/fresh-integration-baseline-20261101/summarize_real.py \
+  reconstruction/integ/daybreak-fresh-real-638fce2a \
+  --base-revision 638fce2a34c8433177f5b778f39cf79e70c971d4
+```
