@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -63,6 +64,46 @@ class CampaignTests(unittest.TestCase):
                                     start_index=1)
             self.assertNotEqual(first["cases"][0]["case_id"], second["cases"][0]["case_id"])
             self.assertEqual(second["start_index"], 1)
+
+    def test_invalid_operational_arguments_are_rejected_before_execution(self):
+        invalid = ({"count": True}, {"detailed_receipts": 1},
+                   {"reduce_mismatches": 0}, {"reduction_budget": True},
+                   {"reduction_budget": 10_001},
+                   {"expected_original_sha256": "0" * 64})
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(C.E, "execute_case") as execute:
+            for index, changes in enumerate(invalid):
+                output = Path(temp) / str(index)
+                arguments = dict(original=self.original, candidate=self.original,
+                                 output=output, seed=20261101, count=1)
+                arguments.update(changes)
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    C.run_campaign(**arguments)
+                self.assertFalse(output.exists())
+            execute.assert_not_called()
+
+    def test_callback_cannot_rewrite_retained_case_or_receipt(self):
+        def mutate(index, case, result):
+            case["steps"].clear()
+            result.clear()
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "copy-boundary"
+            summary = C.run_campaign(original=self.original, candidate=self.original,
+                                     output=output, seed=20261101, count=1,
+                                     after_case=mutate)
+            self.assertEqual(summary["classification_counts"]["equal_observed_behavior"], 1)
+            retained = P.read_json(output / "cases.json")
+            self.assertTrue(retained[0]["steps"])
+
+    def test_invalid_executor_result_cannot_publish_a_complete_campaign(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(C.E, "execute_case", return_value={}):
+            output = Path(temp) / "invalid"
+            with self.assertRaisesRegex(ValueError, "invalid executed case receipt"):
+                C.run_campaign(original=self.original, candidate=self.original,
+                               output=output, seed=20261101, count=1)
+            self.assertFalse(output.exists())
+            partials = P.find_partial_attempts(output)
+            self.assertEqual(len(partials), 1)
+            self.assertTrue((partials[0] / "rejected/0000.json").is_file())
 
 
 if __name__ == "__main__":

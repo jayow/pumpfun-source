@@ -5,36 +5,54 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
-import importlib.util
 import json
 import struct
 import sys
+import types
+import uuid
 from pathlib import Path
 
 from solders.account import Account
 from solders.clock import Clock
 from solders.compute_budget import set_compute_unit_limit
 from solders.instruction import AccountMeta, Instruction
+from solders.hash import Hash
+from solders.message import Message
 from solders.transaction import Transaction
 from solders.transaction_metadata import FailedTransactionMetadata
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-sys.path.insert(0, str(HERE))
-from case_model import canonical, sha, validate_case  # noqa: E402
+# Bootstrap the source-only loader from the captured raw bytes, never a pyc.
+_corpus_path = HERE / "corpus.py"
+_corpus_raw = _corpus_path.read_bytes()
+_corpus_name = "_pump_fuzz_corpus_" + uuid.uuid4().hex
+P = types.ModuleType(_corpus_name)
+P.__file__ = str(_corpus_path)
+P.__source_path__ = str(_corpus_path)
+P.__source_sha256__ = hashlib.sha256(_corpus_raw).hexdigest()
+sys.modules[_corpus_name] = P
+try:
+    exec(compile(_corpus_raw, str(_corpus_path), "exec"), P.__dict__)
+finally:
+    sys.modules.pop(_corpus_name, None)
+C = P.source_module("case_model", HERE / "case_model.py")
+canonical, sha, validate_case = C.canonical, C.sha, C.validate_case
+_output = P.source_module("pump_differential_output", ROOT / "scripts/pump_differential_output.py")
+L = P.source_module("pump_admin_cto_stateful_lifecycle",
+                    ROOT / "reconstruction/verification/pump-admin-cto-stateful/lifecycle.py",
+                    imports={"pump_differential_output": _output})
+RUNTIME_SOURCE_HASHES = {
+    module.__source_path__: module.__source_sha256__ for module in (P, C, _output, L)
+}
+RUNTIME_SOURCE_HASHES.update({str(L.IDL_PATH): sha(L.IDL_BYTES),
+                              str(L.CONFIG_PATH): sha(L.CONFIG_BYTES)})
+RUNTIME_SOURCE_HASHES[str(Path(__file__).resolve())] = globals().get(
+    "__source_sha256__", sha(Path(__file__).read_bytes()))
 
 
-def _load_lifecycle():
-    path = ROOT / "reconstruction/verification/pump-admin-cto-stateful/lifecycle.py"
-    spec = importlib.util.spec_from_file_location("pump_admin_cto_stateful_lifecycle", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-L = _load_lifecycle()
 SCHEMA = "pump-admin-cto-fuzz-execution-v1"
+CANONICAL_ORIGINAL_SHA256 = "7a19affaa2c6187e04a5fe0ea298cee81fa5eb8c24cfcc30d85f615e89f7b02d"
 STRICT_FIELDS = (
     "transaction_base64", "signature", "message_sha256", "error", "outcome",
     "failure_class", "events", "semantic_logs", "inner_instructions", "return_data",
@@ -79,6 +97,24 @@ class FuzzHarness(L.Harness):
         }
         for mutation in case["initial_mutations"]:
             self.apply_mutation(mutation)
+        self.prepare_watchset()
+
+    def prepare_watchset(self):
+        """Keep absent as well as present possible instruction inputs observable."""
+        executable = {L.PUMP, L.AMM, L.FEES, L.TOKEN, L.TOKEN22, L.ATA, L.SYSTEM}
+        fixture = self.mints[0]
+        creators = {self.curve_creator(fixture), fixture.sharing, fixture.holder,
+                    *(pair.pubkey() for pair in L.CREATORS)}
+        for creator in creators:
+            vault = L.pda(b"creator-vault", bytes(creator))
+            amm_vault = L.pda(b"creator_vault", bytes(creator), program=L.AMM)
+            self.tracked.update((creator, vault, amm_vault,
+                                 L.ata(creator, fixture.quote, fixture.token_program),
+                                 L.ata(vault, fixture.quote, fixture.token_program),
+                                 L.ata(amm_vault, fixture.quote, fixture.token_program)))
+        for step in self.fuzz_case["steps"]:
+            self.tracked.update(meta.pubkey for meta in self.admin_instruction(step).accounts)
+        self.tracked.difference_update(executable)
 
     def curve_creator(self, fixture):
         """Resolve the live creator, retaining an account-list value for malformed data."""
@@ -239,7 +275,7 @@ class FuzzHarness(L.Harness):
             "transaction_base64": base64.b64encode(bytes(tx)).decode(),
             "signature": str(tx.signatures[0]), "signature_verification": checks,
             "message_sha256": L.sha(bytes(tx.message)), "error": error,
-            "outcome": L.outcome(logs, error), "failure_class": L.failure_class(error),
+            "outcome": L.outcome(logs, error), "failure_class": failure_class(error),
             "compute_units": meta.compute_units_consumed(), "logs": logs,
             "semantic_logs": L.semantic_logs(logs),
             "events": [line[14:] for line in logs if line.startswith("Program data: ")],
@@ -284,63 +320,232 @@ def compare_runs(original: dict, candidate: dict) -> tuple[list[str], list[dict]
     return mismatches, comparisons
 
 
-def validate_run(run: dict) -> list[str]:
-    """Verify signatures, encoded instruction identity, state and rollback evidence."""
-    failures, signatures, previous = [], [], None
+def same_json(left, right):
+    """JSON equality which never equates bool with integer."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return (left.keys() == right.keys()
+                and all(same_json(left[key], right[key]) for key in left))
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_json(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def failure_class(error):
+    # Guest traps and compute exhaustion are observed program behavior. Host
+    # transport/authentication failures cannot qualify a behavioral comparison.
+    if error is None:
+        return None
+    return "infrastructure" if any(name in error for name in
+           ("BlockhashNotFound", "AlreadyProcessed", "SignatureFailure")) else "program"
+
+
+class FixtureAccounts:
+    """Account storage only: no VM, program loading or transaction execution."""
+    def __init__(self):
+        self.accounts = {}
+
+    def set_account(self, key, value):
+        # LiteSVM follows Solana zero-lamport account reclamation.
+        if value.lamports == 0:
+            self.accounts.pop(key, None)
+        else:
+            self.accounts[key] = value
+
+    def get_account(self, key):
+        return self.accounts.get(key)
+
+
+def fixture_plan(case):
+    """Reconstruct synthetic fixture inputs independently of all saved receipts."""
+    validate_case(case)
+    harness = FuzzHarness.__new__(FuzzHarness)
+    harness.fuzz_case = copy.deepcopy(case)
+    harness.config = copy.deepcopy(case["config"])
+    harness.vm, harness.tracked = FixtureAccounts(), set()
+    harness.mints = [harness._mint_fixture(i, mode)
+                     for i, mode in enumerate(harness.config["mints"])]
+    harness._seed()
+    harness.initial_creators = {
+        f.mint: f.sharing if harness.config.get("shared") else L.CREATORS[0].pubkey()
+        for f in harness.mints
+    }
+    for mutation in case["initial_mutations"]:
+        harness.apply_mutation(mutation)
+    harness.prepare_watchset()
+    for step in case["steps"]:
+        harness._signers(harness.admin_instruction(step))
+    return harness
+
+
+def _account_rows(state, keys):
+    if type(state) is not dict or set(state) != keys:
+        raise ValueError("snapshot key set")
+    rows = {}
+    for key, account in state.items():
+        pubkey = L.P(key)
+        if str(pubkey) != key:
+            raise ValueError("noncanonical account key")
+        if account is None:
+            rows[pubkey] = None
+            continue
+        fields = {"lamports", "owner", "data_len", "data_sha256", "executable",
+                  "rent_epoch", "data_base64"}
+        if type(account) is not dict or set(account) != fields:
+            raise ValueError("account metadata fields")
+        for name in ("lamports", "rent_epoch"):
+            if type(account[name]) is not int or not 0 <= account[name] < 2**64:
+                raise ValueError("account integer")
+        if type(account["executable"]) is not bool or account["executable"]:
+            raise ValueError("watched account executable flag")
+        data = base64.b64decode(account["data_base64"], validate=True)
+        if (type(account["data_len"]) is not int or account["data_len"] != len(data)
+                or type(account["data_sha256"]) is not str or account["data_sha256"] != sha(data)
+                or base64.b64encode(data).decode() != account["data_base64"]):
+            raise ValueError("account data identity")
+        owner = L.P(account["owner"])
+        if str(owner) != account["owner"]:
+            raise ValueError("account owner")
+        rows[pubkey] = Account(account["lamports"], data, owner, False, account["rent_epoch"])
+    return rows
+
+
+def validate_run(run: dict, case: dict, *, images=None) -> list[str]:
+    """Admit the exact case, fixture, complete signed message and typed state."""
+    del images  # Fixture validation deliberately does not execute any image.
+    failures, signatures = [], []
     try:
-        for row in run["receipts"]:
-            tag = row["step"]
+        fixture = fixture_plan(case)
+        initial = fixture.snapshot()
+        if type(run) is not dict or set(run) != {"initial_state_hash", "receipts", "mint_accounts"}:
+            raise ValueError("run fields")
+        f = fixture.mints[0]
+        expected_mints = [{"mint": str(f.mint), "curve": str(f.curve),
+                           "pool": str(f.pool), "sharing": str(f.sharing)}]
+        if not same_json(run["mint_accounts"], expected_mints):
+            failures.append("mint-accounts")
+        receipts = run["receipts"]
+        if type(receipts) is not list or len(receipts) != len(case["steps"]) or not receipts:
+            raise ValueError("receipt count")
+        if run["initial_state_hash"] != L.canonical_hash(initial):
+            failures.append("initial-state-hash")
+        keys, previous = set(initial), initial
+        fields = {"step", "operation", "recent_blockhash", "mint_index", "instruction_data_base64",
+                  "instruction_accounts", "transaction_base64", "signature", "signature_verification",
+                  "message_sha256", "error", "outcome", "failure_class", "compute_units", "logs",
+                  "semantic_logs", "events", "inner_instructions", "return_data", "before_hash",
+                  "after_hash", "before", "after", "rollback_nonfee_equal"}
+        for step, row in zip(case["steps"], receipts):
+            tag = step["name"]
+            if type(row) is not dict or set(row) != fields:
+                raise ValueError("receipt fields")
+            if (row["step"] != tag or row["operation"] != "admin_cto"
+                    or type(row["mint_index"]) is not int or row["mint_index"] != 0):
+                failures.append(tag + ":case-step")
+            before_rows = _account_rows(row["before"], keys)
+            _account_rows(row["after"], keys)
+            if not same_json(previous, row["before"]):
+                failures.append(tag + ":state-continuity")
+            fixture.vm.accounts = before_rows
+            instruction = fixture.admin_instruction(step)
+            expected_accounts = [{"pubkey": str(m.pubkey), "signer": m.is_signer,
+                                  "writable": m.is_writable} for m in instruction.accounts]
+            if not same_json(row["instruction_accounts"], expected_accounts):
+                failures.append(tag + ":instruction-accounts")
+            encoded_data = base64.b64encode(bytes(instruction.data)).decode()
+            if row["instruction_data_base64"] != encoded_data:
+                failures.append(tag + ":instruction-data")
+            blockhash = Hash.from_string(row["recent_blockhash"])
+            expected_message = Message.new_with_blockhash(
+                [set_compute_unit_limit(1_400_000), instruction], L.PAYER.pubkey(), blockhash)
             raw = base64.b64decode(row["transaction_base64"], validate=True)
             tx = Transaction.from_bytes(raw)
             checked = list(tx.verify_with_results())
-            required = tx.message.header.num_required_signatures
-            instruction = tx.message.instructions[-1]
-            actual_accounts = [str(tx.message.account_keys[index]) for index in instruction.accounts]
-            declared_accounts = [item["pubkey"] for item in row["instruction_accounts"]]
-            if (bytes(tx) != raw or len(tx.signatures) != required or checked != [True] * required
-                    or checked != row["signature_verification"]
+            declared_checks = row["signature_verification"]
+            required = expected_message.header.num_required_signatures
+            expected_signers = {pair.pubkey() for pair in fixture._signers(instruction)}
+            if (bytes(tx) != raw or base64.b64encode(raw).decode() != row["transaction_base64"]
+                    or bytes(tx.message) != bytes(expected_message)
+                    or len(tx.signatures) != required or checked != [True] * required
+                    or not checked or type(declared_checks) is not list
+                    or any(type(value) is not bool for value in declared_checks)
+                    or checked != declared_checks
+                    or set(tx.message.account_keys[:required]) != expected_signers
                     or row["signature"] != str(tx.signatures[0])
-                    or row["message_sha256"] != L.sha(bytes(tx.message))
-                    or row["recent_blockhash"] != str(tx.message.recent_blockhash)
-                    or tx.message.account_keys[0] != L.PAYER.pubkey()
-                    or tx.message.account_keys[instruction.program_id_index] != L.PUMP
-                    or bytes(instruction.data) != base64.b64decode(row["instruction_data_base64"], validate=True)
-                    or actual_accounts != declared_accounts):
+                    or row["message_sha256"] != sha(bytes(tx.message))):
                 failures.append(tag + ":transaction-integrity")
             signatures.append(str(tx.signatures[0]))
             for stage in ("before", "after"):
-                state = row[stage]
-                if row[stage + "_hash"] != L.canonical_hash(state):
+                if row[stage + "_hash"] != L.canonical_hash(row[stage]):
                     failures.append(tag + ":" + stage + "-hash")
-                for key, account in state.items():
-                    L.P(key)
-                    if account is None:
-                        continue
-                    data = base64.b64decode(account["data_base64"], validate=True)
-                    L.P(account["owner"])
-                    if (len(data) != account["data_len"] or L.sha(data) != account["data_sha256"]
-                            or type(account["lamports"]) is not int or not 0 <= account["lamports"] < 2**64):
-                        failures.append(tag + ":account-snapshot")
-            if previous is None:
-                if run["initial_state_hash"] != L.canonical_hash(row["before"]):
-                    failures.append(tag + ":initial-state")
-            elif L.canonical_hash(previous) != L.canonical_hash(row["before"]):
-                failures.append(tag + ":state-continuity")
-            previous = row["after"]
+            if (row["error"] is not None and type(row["error"]) is not str
+                    or type(row["compute_units"]) is not int or row["compute_units"] < 0
+                    or type(row["logs"]) is not list
+                    or any(type(line) is not str for line in row["logs"])):
+                raise ValueError("receipt result types")
             nonfee = lambda state: {key: value for key, value in state.items()
                                     if key != str(L.PAYER.pubkey())}
-            rollback = None if row["error"] is None else nonfee(row["before"]) == nonfee(row["after"])
-            if rollback != row["rollback_nonfee_equal"] or rollback is False:
+            rollback = (None if row["error"] is None
+                        else same_json(nonfee(row["before"]), nonfee(row["after"])))
+            if not same_json(rollback, row["rollback_nonfee_equal"]) or rollback is False:
                 failures.append(tag + ":non-atomic-failure")
-            if (row["outcome"] != L.outcome(row["logs"], row["error"])
-                    or row["failure_class"] != L.failure_class(row["error"])
-                    or row["semantic_logs"] != L.semantic_logs(row["logs"])
-                    or row["events"] != [line[14:] for line in row["logs"] if line.startswith("Program data: ")]):
+            if (not same_json(row["outcome"], L.outcome(row["logs"], row["error"]))
+                    or not same_json(row["failure_class"], failure_class(row["error"]))
+                    or not same_json(row["semantic_logs"], L.semantic_logs(row["logs"]))
+                    or not same_json(row["events"], [line[14:] for line in row["logs"]
+                                                    if line.startswith("Program data: ")])):
                 failures.append(tag + ":derived-fields")
+            previous = row["after"]
         if len(signatures) != len(set(signatures)):
             failures.append("duplicate-signature")
-    except (KeyError, TypeError, ValueError, IndexError) as error:
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError, OverflowError) as error:
         failures.append("malformed-receipt:" + type(error).__name__)
+    return failures
+
+
+def validate_result(result, case, *, images=None):
+    """Independent case-bound admission, including excluded fixture records."""
+    failures = []
+    try:
+        validate_case(case)
+        if (type(result) is not dict or result.get("schema") != SCHEMA
+                or result.get("case_id") != case["case_id"]
+                or not same_json(result.get("case"), case)):
+            return ["result-case"]
+        if "original" not in result:
+            if set(result) != {"schema", "case_id", "case", "classification", "reason"}:
+                return ["excluded-result-fields"]
+            if result.get("classification") != "unsupported_fixture":
+                return ["unverified-infrastructure-failure"]
+            try:
+                fixture_plan(case)
+            except UnsupportedFixture as error:
+                return [] if result.get("reason") == str(error) else ["unsupported-reason"]
+            return ["unsupported-fixture-not-reproduced"]
+        fields = {"schema", "case_id", "case", "classification", "reason", "original", "candidate",
+                  "comparison", "mismatch_fields", "invariant_failures", "infrastructure_failures"}
+        if set(result) != fields or result["reason"] is not None:
+            failures.append("executed-result-fields")
+        invariants = {side: validate_run(result[side], case, images=images)
+                      for side in ("original", "candidate")}
+        mismatches, comparisons = compare_runs(result["original"], result["candidate"])
+        infrastructure = [f"{side}:{row['step']}" for side in ("original", "candidate")
+                          for row in result[side]["receipts"]
+                          if row["failure_class"] == "infrastructure"]
+        for name, expected in (("invariant_failures", invariants), ("mismatch_fields", mismatches),
+                               ("comparison", comparisons), ("infrastructure_failures", infrastructure)):
+            if not same_json(result.get(name), expected):
+                failures.append(name)
+        classification = ("infrastructure_failure" if any(invariants.values()) or infrastructure
+                          else "different_behavior" if mismatches else "equal_observed_behavior")
+        if result.get("classification") != classification:
+            failures.append("classification")
+        failures.extend(f"{side}:{error}" for side, errors in invariants.items() for error in errors)
+        if infrastructure:
+            failures.append("execution-infrastructure")
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError, OverflowError) as error:
+        failures.append("malformed-result:" + type(error).__name__)
     return failures
 
 
@@ -349,6 +554,9 @@ def execute_case(case: dict, original: Path, candidate: Path, images=None) -> di
     validate_case(case)
     result = {"schema": SCHEMA, "case_id": case["case_id"], "case": copy.deepcopy(case)}
     try:
+        fixture_plan(case)
+        if sha(P.regular_bytes(original)) != CANONICAL_ORIGINAL_SHA256:
+            raise ValueError("original image is not the captured Pump Main")
         left = run_image(original, case, images)
         right = run_image(candidate, case, images)
     except UnsupportedFixture as error:
@@ -361,7 +569,7 @@ def execute_case(case: dict, original: Path, candidate: Path, images=None) -> di
                       reason=f"{type(error).__name__}: {error}")
         return result
     mismatches, comparison = compare_runs(left, right)
-    invariants = {"original": validate_run(left), "candidate": validate_run(right)}
+    invariants = {"original": validate_run(left, case), "candidate": validate_run(right, case)}
     infrastructure = [f"{side}:{row['step']}" for side, run in (("original", left), ("candidate", right))
                       for row in run["receipts"] if row["failure_class"] == "infrastructure"]
     if any(invariants.values()) or infrastructure:

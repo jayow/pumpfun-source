@@ -84,6 +84,39 @@ class ReducerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not demonstrate"):
             R.reduce_case(case(fee=1), evaluator)
 
+    def test_retained_witness_and_explicit_neighborhood_replay_verify(self):
+        original = case()
+        reduced = R.reduce_case(original, evaluator)
+        self.assertEqual(R.validate_reduction(reduced, original, evaluator(original)), [])
+        self.assertEqual(R.validate_reduction(reduced, original, evaluator(original), evaluate=evaluator), [])
+
+    def test_false_execution_count_and_changed_witness_are_rejected(self):
+        original = case()
+        reduced = R.reduce_case(original, evaluator)
+        bad = copy.deepcopy(reduced)
+        bad["executions"] = True
+        self.assertIn("reduction-execution-budget", R.validate_reduction(bad, original, evaluator(original)))
+        bad = copy.deepcopy(reduced)
+        bad["result"] = evaluator(case(fee=1))
+        self.assertIn("reduction-mismatch-property", R.validate_reduction(bad, original, evaluator(original)))
+
+    def test_unavailable_neighbors_do_not_establish_minimality(self):
+        original = case()
+        def unavailable(value):
+            return evaluator(value) if value["case_id"] == original["case_id"] else {
+                "classification": "unsupported_fixture"}
+        reduced = R.reduce_case(original, unavailable)
+        self.assertFalse(reduced["minimality"]["demonstrated"])
+        self.assertTrue(reduced["minimality"]["unchecked_case_ids"])
+
+    def test_empty_difference_claim_is_not_a_counterexample(self):
+        original = case()
+        empty = {"classification": "different_behavior", "mismatch_fields": [],
+                 "comparison": [], "original": {"receipts": []}, "candidate": {"receipts": []}}
+        self.assertIsNone(R.mismatch_property(empty))
+        with self.assertRaisesRegex(ValueError, "does not demonstrate"):
+            R.reduce_case(original, lambda _: empty)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,11 +16,21 @@ WRONG_ACCOUNTS = (
 BOUNDARIES = (0, 1, 2, 7, 8, 31, 32, 48, 49, 63, 64, 80, 81, 82, 83,
               108, 109, 114, 115, 123, 124, 125, 165, 166, 255, 256, 300,
               301, 890_879, 890_880, 890_881, 2**32, 2**63, 2**64 - 1)
+# Bounds of this fixture grammar, not additional Solana protocol limits.
+MAX_ACCOUNT_BYTES = 16_384
+MAX_INSTRUCTION_BYTES = 1_024
+ACCOUNT_COUNT = 28
+CREATOR_COUNT = 4
+OWNER_ROLES = ("system", "pump", "fees", "token", "token22")
+_CONFIG_FLAGS = {"shared", "complete", "holder_initial"}
+_TOKEN_FLAGS = {"frozen_pump", "frozen_wallet", "frozen_amm"}
+_STEP_OPTIONALS = {"new", "new_none", "holder", "fee", "wrong", "readonly",
+                   "replace_accounts", "drop_accounts", "instruction_mutation"}
 
 
 def canonical(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False).encode("utf-8")
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def sha(raw: bytes) -> str:
@@ -152,29 +162,166 @@ def case_identity(case: dict) -> str:
     return sha(canonical(value))
 
 
+def _object(value, required, optional, label):
+    if type(value) is not dict or any(type(key) is not str for key in value):
+        raise ValueError(f"invalid {label} object")
+    keys = set(value)
+    if not set(required) <= keys or keys - set(required) - set(optional):
+        raise ValueError(f"invalid {label} fields")
+    return value
+
+
+def _uint(value, maximum, label):
+    if type(value) is not int or not 0 <= value <= maximum:
+        raise ValueError(f"invalid {label} integer")
+
+
+def _boolean(value, label):
+    if type(value) is not bool:
+        raise ValueError(f"invalid {label} boolean")
+
+
+def _enum(value, choices, label):
+    if type(value) is not str or value not in choices:
+        raise ValueError(f"invalid {label}")
+
+
+def _list(value, maximum, label):
+    if type(value) is not list or len(value) > maximum:
+        raise ValueError(f"invalid {label} list")
+    return value
+
+
+def _config(config):
+    _object(config, {"mints"}, _CONFIG_FLAGS | _TOKEN_FLAGS |
+            {"native_vault_lamports", "spl_vault_tokens", "amm_tokens"}, "fixture config")
+    modes = _list(config["mints"], 1, "mints")
+    if len(modes) != 1:
+        raise ValueError("fixture config needs exactly one mint")
+    mode = modes[0]
+    _enum(mode, MODES, "mint mode")
+    allowed = _CONFIG_FLAGS | ({"native_vault_lamports"} if mode == "native" else
+                               _TOKEN_FLAGS | {"spl_vault_tokens", "amm_tokens"})
+    if set(config) - {"mints"} - allowed:
+        raise ValueError("fixture config field is not used by this mint mode")
+    for key, value in config.items():
+        if key in _CONFIG_FLAGS | _TOKEN_FLAGS:
+            _boolean(value, "fixture config " + key)
+        elif key != "mints":
+            _uint(value, 2**64 - 1, "fixture config " + key)
+    return mode
+
+
+def _mutation(mutation, mode):
+    _object(mutation, {"target", "action", "value"}, {"offset"}, "account mutation")
+    target, action, value = mutation["target"], mutation["action"], mutation["value"]
+    _enum(target, ACCOUNT_TARGETS + (() if mode == "native" else TOKEN_TARGETS),
+          "account mutation target")
+    _enum(action, ("truncate", "set_byte", "owner", "lamports", "token_amount", "token_state"),
+          "account mutation action")
+    if action in ("token_amount", "token_state") and target not in TOKEN_TARGETS:
+        raise ValueError("token mutation needs a token account target")
+    if action == "set_byte":
+        if "offset" not in mutation:
+            raise ValueError("byte mutation needs an offset")
+        _uint(mutation["offset"], MAX_ACCOUNT_BYTES - 1, "byte mutation offset")
+        _uint(value, 255, "byte mutation value")
+    else:
+        if "offset" in mutation:
+            raise ValueError("offset is only valid for a byte mutation")
+        if action == "owner":
+            _enum(value, OWNER_ROLES, "owner role")
+        else:
+            maximum = MAX_ACCOUNT_BYTES if action == "truncate" else (
+                255 if action == "token_state" else 2**64 - 1)
+            _uint(value, maximum, "account mutation value")
+
+
+def _instruction_mutation(mutation):
+    _object(mutation, {"action", "value"}, set(), "instruction mutation")
+    action, value = mutation["action"], mutation["value"]
+    _enum(action, ("truncate", "append", "holder_tag"), "instruction mutation action")
+    if action == "append":
+        if (type(value) is not str or len(value) > MAX_INSTRUCTION_BYTES * 2 or
+                len(value) % 2 or any(char not in "0123456789abcdef" for char in value)):
+            raise ValueError("instruction append must be bounded canonical lowercase hex")
+    else:
+        _uint(value, MAX_INSTRUCTION_BYTES if action == "truncate" else 255,
+              "instruction mutation value")
+
+
+def _step_shape(step):
+    _object(step, {"name", "op"}, _STEP_OPTIONALS, "transaction step")
+    name = step["name"]
+    if type(name) is not str or not name or name != name.strip() or not name.isprintable():
+        raise ValueError("invalid transaction step name")
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("invalid transaction step name") from error
+    if len(encoded) > 128:
+        raise ValueError("transaction step name is too long")
+    _enum(step["op"], ("admin_cto",), "transaction operation")
+    for key in ("holder", "new_none"):
+        if key in step:
+            _boolean(step[key], key)
+    if "new" in step:
+        _uint(step["new"], CREATOR_COUNT - 1, "new creator")
+    if "new" in step and step.get("new_none") is True:
+        raise ValueError("new creator and new_none cannot both be selected")
+    if "fee" in step:
+        _uint(step["fee"], 2**64 - 1, "fee")
+    if "wrong" in step:
+        _enum(step["wrong"], WRONG_ACCOUNTS, "wrong account role")
+    if "drop_accounts" in step:
+        _uint(step["drop_accounts"], ACCOUNT_COUNT - 1, "account removal count")
+    if "readonly" in step:
+        indices = _list(step["readonly"], ACCOUNT_COUNT, "readonly account indices")
+        for index in indices:
+            _uint(index, ACCOUNT_COUNT - 1, "readonly account index")
+        if len(set(indices)) != len(indices):
+            raise ValueError("duplicate readonly account index")
+    if "replace_accounts" in step:
+        rows = _list(step["replace_accounts"], ACCOUNT_COUNT, "account replacements")
+        indices = []
+        for row in rows:
+            _object(row, {"index", "creator"}, set(), "account replacement")
+            _uint(row["index"], ACCOUNT_COUNT - 1, "replacement account index")
+            _uint(row["creator"], CREATOR_COUNT - 1, "replacement creator")
+            indices.append(row["index"])
+        if len(set(indices)) != len(indices):
+            raise ValueError("duplicate replacement account index")
+    if "instruction_mutation" in step:
+        _instruction_mutation(step["instruction_mutation"])
+
+
 def validate_case(case: dict) -> dict:
-    if not isinstance(case, dict) or case.get("schema") != SCHEMA:
+    _object(case, {"schema", "generator", "root_seed", "case_index", "case_seed",
+                   "config", "initial_mutations", "steps", "case_id"}, set(), "case")
+    if type(case["schema"]) is not str or case["schema"] != SCHEMA:
         raise ValueError("invalid case schema")
-    if case.get("generator") != GENERATOR:
+    if type(case["generator"]) is not str or case["generator"] != GENERATOR:
         raise ValueError("invalid generator version")
-    for field in ("root_seed", "case_index", "case_seed"):
-        if type(case.get(field)) is not int or case[field] < 0:
-            raise ValueError(f"invalid {field}")
+    _uint(case["root_seed"], 2**128 - 1, "root_seed")
+    _uint(case["case_index"], 2**64 - 1, "case_index")
+    _uint(case["case_seed"], 2**128 - 1, "case_seed")
     if case["case_seed"] != derive_case_seed(case["root_seed"], case["case_index"]):
         raise ValueError("case seed does not match root seed and index")
-    config = case.get("config")
-    if not isinstance(config, dict) or config.get("mints") not in (["native"], ["spl"], ["token22"]):
-        raise ValueError("invalid fixture config")
-    mutations = case.get("initial_mutations")
-    steps = case.get("steps")
-    if not isinstance(mutations, list) or len(mutations) > 8:
-        raise ValueError("invalid mutation list")
-    if not isinstance(steps, list) or not 1 <= len(steps) <= 8:
+    mode = _config(case["config"])
+    mutations = _list(case["initial_mutations"], 8, "initial mutations")
+    for mutation in mutations:
+        _mutation(mutation, mode)
+    steps = _list(case["steps"], 8, "transaction steps")
+    if not steps:
         raise ValueError("invalid step list")
-    if any(not isinstance(row, dict) or row.get("op") != "admin_cto" for row in steps):
-        raise ValueError("invalid transaction step")
+    names = set()
+    for step in steps:
+        _step_shape(step)
+        if step["name"] in names:
+            raise ValueError("duplicate transaction step name")
+        names.add(step["name"])
     expected = case_identity(case)
-    if case.get("case_id") != expected:
+    if type(case["case_id"]) is not str or case["case_id"] != expected:
         raise ValueError("case identity mismatch")
     return case
 
@@ -204,6 +351,9 @@ def generate_case(root_seed: int, index: int) -> dict:
 def generate_corpus(root_seed: int, count: int, start_index: int = 0) -> list[dict]:
     if type(count) is not int or not 1 <= count <= 10_000:
         raise ValueError("count must be between 1 and 10000")
+    _uint(start_index, 2**64 - 1, "start index")
+    if start_index + count > 2**64:
+        raise ValueError("corpus exceeds the unsigned 64-bit case index domain")
     rows, identities = [], set()
     index = start_index
     while len(rows) < count:

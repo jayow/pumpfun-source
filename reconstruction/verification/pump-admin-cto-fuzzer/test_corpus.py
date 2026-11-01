@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -65,6 +66,67 @@ class CorpusTests(unittest.TestCase):
     def test_compressed_json_is_reproducible(self):
         value = {"z": 1, "a": [2, 3]}
         self.assertEqual(C.compressed_json(value), C.compressed_json(value))
+
+    def test_private_source_loader_ignores_canonical_alias_and_rejects_symlink(self):
+        import types
+        with tempfile.TemporaryDirectory(dir=HERE) as temp:
+            source = Path(temp) / "sample.py"
+            source.write_text("VALUE = 'source'\n")
+            poison = types.ModuleType("sample")
+            poison.VALUE = "cached"
+            previous = sys.modules.get("sample")
+            sys.modules["sample"] = poison
+            try:
+                loaded = C.source_module("sample", source)
+                self.assertEqual(loaded.VALUE, "source")
+                self.assertIs(sys.modules["sample"], poison)
+                self.assertNotIn(loaded.__name__, sys.modules)
+                self.assertEqual(loaded.__source_sha256__, hashlib.sha256(source.read_bytes()).hexdigest())
+                alias = Path(temp) / "alias.py"
+                alias.symlink_to(source)
+                with self.assertRaises(ValueError):
+                    C.source_module("alias", alias)
+            finally:
+                if previous is None:
+                    sys.modules.pop("sample", None)
+                else:
+                    sys.modules["sample"] = previous
+
+    def _sealed_report(self, directory):
+        output = Path(directory) / "report"
+        with C.CampaignPublisher(output, {"seed": 1}) as publisher:
+            publisher.write_json("cases.json", [{"id": "one"}])
+            publisher.write_json("receipts/one.json", {"receipt": True})
+            digest = publisher.write_manifest()
+            publisher.write_json("summary.json", {"artifact_manifest_sha256": digest})
+            publisher.commit({"artifact_manifest_sha256": digest})
+        return output, digest
+
+    def test_report_census_rejects_unlisted_members_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output, digest = self._sealed_report(temp)
+            self.assertIn("cases.json", C.verify_artifacts(output, digest)["files"])
+            extra = output / "receipts/unlisted.txt"
+            extra.write_text("unlisted")
+            with self.assertRaises(ValueError):
+                C.verify_artifacts(output, digest)
+            extra.unlink()
+            member = output / "receipts/one.json"
+            outside = Path(temp) / "outside.json"
+            outside.write_bytes(member.read_bytes())
+            member.unlink()
+            member.symlink_to(outside)
+            with self.assertRaises(ValueError):
+                C.verify_artifacts(output, digest)
+
+    def test_resealed_duplicate_manifest_keys_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output, _ = self._sealed_report(temp)
+            path = output / "artifacts.json"
+            raw = path.read_bytes().replace(b'{"files":', b'{"schema":"pump-admin-cto-fuzz-artifacts-v1","files":', 1)
+            path.write_bytes(raw)
+            with self.assertRaisesRegex(ValueError, "duplicate JSON"):
+                C.verify_artifacts(output, hashlib.sha256(raw).hexdigest())
 
 
 if __name__ == "__main__":

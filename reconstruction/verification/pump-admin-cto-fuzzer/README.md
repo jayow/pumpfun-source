@@ -15,9 +15,16 @@ SPL Token, Token-2022, and Associated Token images perform genuine CPI behavior.
 ## Case model and comparison
 
 `case_model.py` uses a versioned SHA-256 counter stream rather than Python's RNG.
-The root seed, unsigned 64-bit index, derived 128-bit case seed, canonical input,
+The unsigned 128-bit root seed, unsigned 64-bit index, derived 128-bit case seed, canonical input,
 and content-derived case ID are retained. A corpus removes duplicate case IDs.
 `--start-index` permits non-overlapping bounded tranches.
+
+The fixture grammar rejects unknown fields, integer substitutes for booleans,
+duplicate step names and account indices, invalid ownership/target combinations,
+and noncanonical hexadecimal data. It permits one to eight retained steps and
+zero to eight mutations; account byte edits are bounded at 16,384 bytes and
+instruction edits at 1,024 bytes. These are fixture limits, not protocol limits.
+Campaigns accept 1–1,000 cases and reduction budgets of 1–10,000 executions.
 
 Generated compositions cover native, SPL Token, and Token-2022 quote modes;
 optional argument tags and values; creator/holder/fee transitions; sharing,
@@ -61,13 +68,13 @@ uv run --offline --python 3.12 --with solders==0.27.1 python -I -B "$tool" run \
   --original "$original" --candidate "$original" \
   --expected-original-sha256 7a19affaa2c6187e04a5fe0ea298cee81fa5eb8c24cfcc30d85f615e89f7b02d \
   --expected-candidate-sha256 7a19affaa2c6187e04a5fe0ea298cee81fa5eb8c24cfcc30d85f615e89f7b02d \
-  --seed 20261101 --count 64 --output "$out/control"
+  --seed 20261101 --count 16 --output "$out/control"
 
 uv run --offline --python 3.12 --with solders==0.27.1 python -I -B "$tool" run \
   --original "$original" --candidate /path/to/provenance-verified/candidate.so \
   --expected-original-sha256 7a19affaa2c6187e04a5fe0ea298cee81fa5eb8c24cfcc30d85f615e89f7b02d \
   --expected-candidate-sha256 EXPECTED_SHA256 \
-  --seed 20261101 --count 64 --output "$out/candidate" --allow-mismatches
+  --seed 20261101 --count 16 --output "$out/candidate"
 ```
 
 `cases.json` is the replayable corpus. Detailed receipts are deterministic gzip
@@ -80,8 +87,14 @@ uv run --offline --python 3.12 --with solders==0.27.1 python -I -B "$tool" repla
   --candidate /path/to/candidate.so
 ```
 
-Every executable, dependency, IDL, fixture, and producer is copied to an
+The original image must match the captured Pump SHA-256 above. Every executable, dependency, IDL, fixture, and producer is copied to an
 immutable temporary snapshot before execution and rehashed at completion.
+Source modules are compiled from the hashed `.py` bytes in private namespaces;
+timestamp bytecode caches and preexisting canonical module aliases cannot
+replace the local producer graph. The report binds the exact generated corpus,
+the complete artifact and directory census, and the actual executed source
+hashes. Every receipt is checked against its canonical case, constructor state,
+complete signed message, account roles, watched keys, and transaction continuity.
 Destination publication uses a POSIX advisory lock, exclusive files, fsync, and
 an atomic directory rename. Complete output is never overwritten. A normal
 exception marks the hidden `.NAME.partial-*` directory interrupted; SIGKILL or
@@ -104,7 +117,7 @@ unchecked/preserving neighbor leaves `minimality.demonstrated` false.
 
 ## Independent verification and tests
 
-The verifier recomputes corpus and summary hashes, executable/producer identity,
+The v2 verifier regenerates the exact seeded corpus and recomputes artifact and summary hashes, executable/producer identity,
 transaction signatures, instruction identity, account snapshots, continuity,
 rollback, derived fields, strict comparison, classifications, counts, and
 negative controls. `--reexecute` additionally reruns every case:
@@ -120,8 +133,12 @@ uv run --offline --python 3.12 --with solders==0.27.1 python -I -B \
   -p 'test_*.py' -v
 ```
 
-Without detailed receipts or `--reexecute`, verification is explicitly reported
-as provenance-only. Corrupt receipts, changed executable identities, mutated
+Compact reports require either `--reexecute` or the explicit `--provenance-only`
+option. Provenance-only admission never returns runtime verification. Detailed
+receipts can be admitted offline; `--reexecute` also independently reproduces
+the retained observations. A saved reduction is a retained mismatch witness;
+its local one-minimality claim is independently checked only with reexecution.
+Corrupt receipts, changed executable identities, mutated
 inputs, invalid case IDs, invalid reductions, publication races, and extension
 panic handling have deterministic regressions.
 

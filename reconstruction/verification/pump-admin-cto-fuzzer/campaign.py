@@ -8,24 +8,59 @@ import hashlib
 import json
 import subprocess
 import sys
+import types
 from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-sys.path.insert(0, str(HERE))
-import case_model as C  # noqa: E402
-import corpus as P  # noqa: E402
-import executor as E  # noqa: E402
-import reducer as R  # noqa: E402
+_pfile = HERE / "corpus.py"
+if _pfile.is_symlink():
+    raise ValueError("corpus source must not be a symlink")
+_pbytes = _pfile.read_bytes()
+P = types.ModuleType("_pump_fuzz_corpus_bootstrap")
+P.__file__ = str(_pfile)
+P.__source_path__ = str(_pfile)
+P.__source_sha256__ = hashlib.sha256(_pbytes).hexdigest()
+exec(compile(_pbytes, str(_pfile), "exec", dont_inherit=True, optimize=0), P.__dict__)
+C = P.source_module("case_model", HERE / "case_model.py")
+E = P.source_module("executor", HERE / "executor.py")
+R = P.source_module("reducer", HERE / "reducer.py")
+SELF_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
-SCHEMA = "pump-admin-cto-fuzz-campaign-v1"
+SCHEMA = "pump-admin-cto-fuzz-campaign-v2"
 PRODUCERS = (
     HERE / "case_model.py", HERE / "executor.py", HERE / "reducer.py",
-    HERE / "corpus.py", HERE / "campaign.py",
+    HERE / "corpus.py", HERE / "campaign.py", HERE / "verify_report.py",
     ROOT / "reconstruction/verification/pump-admin-cto-stateful/lifecycle.py",
     E.L.IDL_PATH, E.L.CONFIG_PATH, ROOT / "scripts/pump_differential_output.py",
 )
+
+
+def loaded_source_hashes() -> dict[str, str]:
+    result = {str(Path(__file__).absolute()): SELF_SHA256}
+    for module in (P, C, E, R):
+        path, digest = module.__source_path__, module.__source_sha256__
+        if path in result and result[path] != digest:
+            raise ValueError("different loaded source versions: " + path)
+        result[path] = digest
+    for table in (E.RUNTIME_SOURCE_HASHES, R.RUNTIME_SOURCE_HASHES):
+        for path, digest in table.items():
+            if path in result and result[path] != digest:
+                raise ValueError("different loaded source versions: " + path)
+            result[path] = digest
+    return result
+
+
+def require_loaded_sources(snapshot=None) -> None:
+    loaded = loaded_source_hashes()
+    for path, digest in loaded.items():
+        if P.file_sha(Path(path)) != digest:
+            raise ValueError("loaded producer source changed: " + path)
+    if snapshot is not None:
+        declared = {str(path): snapshot.hashes[name] for name, path in snapshot.sources.items()}
+        if not set(loaded).issubset(declared) or any(declared[path] != digest for path, digest in loaded.items()):
+            raise ValueError("snapshot does not bind every executed source module")
 
 
 def _git(*args: str) -> str:
@@ -86,10 +121,16 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
                  reduction_budget: int = 500, after_case=None) -> dict:
     if type(count) is not int or not 1 <= count <= 1_000:
         raise ValueError("campaign count must be between 1 and 1000")
+    if type(detailed_receipts) is not bool or type(reduce_mismatches) is not bool:
+        raise ValueError("campaign switches must be booleans")
+    if type(reduction_budget) is not int or not 1 <= reduction_budget <= 10_000:
+        raise ValueError("reduction budget must be between 1 and 10000")
+    require_loaded_sources()
     cases = C.generate_corpus(seed, count, start_index)
-    expected = {}
-    if expected_original_sha256:
-        expected["pump_original"] = expected_original_sha256
+    frozen_cases = copy.deepcopy(cases)
+    if expected_original_sha256 not in (None, E.CANONICAL_ORIGINAL_SHA256):
+        raise ValueError("original hash must name the captured Pump image")
+    expected = {"pump_original": E.CANONICAL_ORIGINAL_SHA256}
     if expected_candidate_sha256:
         expected["pump_candidate"] = expected_candidate_sha256
     inputs = declared_inputs(original, candidate)
@@ -99,11 +140,18 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
     with P.CampaignPublisher(output, attempt) as publisher:
         publisher.write_json("cases.json", cases)
         with P.InputSnapshot(inputs, expected) as snapshot:
+            require_loaded_sources(snapshot)
             images = _images(snapshot)
             results, summaries, reductions = [], [], []
             for index, case in enumerate(cases):
                 result = E.execute_case(case, snapshot.paths["pump_original"],
                                         snapshot.paths["pump_candidate"], images)
+                if after_case is not None:
+                    after_case(index, copy.deepcopy(case), copy.deepcopy(result))
+                failures = E.validate_result(result, case, images=images)
+                if failures:
+                    publisher.write_json(f"rejected/{index:04d}.json", {"failures": failures, "result": result})
+                    raise ValueError("invalid executed case receipt: " + repr(failures))
                 results.append(result)
                 summaries.append(_case_summary(result))
                 if detailed_receipts:
@@ -113,9 +161,18 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
                     publisher.write_json(f"progress/{index:04d}-{case['case_id']}.json",
                                          summaries[-1])
                 if result["classification"] == "different_behavior" and reduce_mismatches:
-                    evaluation = lambda value: E.execute_case(
-                        value, snapshot.paths["pump_original"], snapshot.paths["pump_candidate"], images)
+                    def evaluation(value):
+                        outcome = E.execute_case(value, snapshot.paths["pump_original"],
+                                                 snapshot.paths["pump_candidate"], images)
+                        rejected = E.validate_result(outcome, value, images=images)
+                        if rejected:
+                            raise ValueError("invalid reduction execution: " + repr(rejected))
+                        return outcome
                     reduction = R.reduce_case(case, evaluation, max_trials=reduction_budget)
+                    rejected = R.validate_reduction(reduction, case, result)
+                    rejected += E.validate_result(reduction["result"], reduction["case"], images=images)
+                    if rejected:
+                        raise ValueError("invalid reduction witness: " + repr(rejected))
                     reductions.append(reduction)
                     name = reduction["reduced_case_id"]
                     publisher.write_json(f"counterexamples/{name}/case.json", reduction["case"])
@@ -131,19 +188,22 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
                         "replay": "campaign.py replay --case case.json --original ORIGINAL.so --candidate CANDIDATE.so",
                         "minimality": reduction["minimality"],
                     })
-                if after_case is not None:
-                    after_case(index, case, result)
+            if cases != frozen_cases:
+                raise ValueError("case manifest changed during execution")
+            require_loaded_sources(snapshot)
             changed = snapshot.changed_sources()
             if changed:
                 raise RuntimeError(f"declared inputs changed during campaign: {json.dumps(changed, sort_keys=True)}")
             counts = Counter(row["classification"] for row in results)
             executed = [row for row in results if "original" in row]
             control = negative_controls(executed[0]) if executed else {"available": False}
+            artifact_sha256 = publisher.write_manifest()
             summary = {
                 "schema": SCHEMA, "tested_git_sha": _git("rev-parse", "HEAD"),
                 "upstream_sha": _git("merge-base", "HEAD", "origin/main"),
                 "seed": seed, "start_index": start_index, "case_count": count,
                 "case_manifest_sha256": attempt["case_manifest_sha256"],
+                "artifact_manifest_sha256": artifact_sha256,
                 "program_sha256": {"original": snapshot.hashes["pump_original"],
                                    "candidate": snapshot.hashes["pump_candidate"]},
                 "all_input_sha256": snapshot.hashes,
@@ -151,9 +211,13 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
                     "equal_observed_behavior", "different_behavior", "unsupported_fixture",
                     "infrastructure_failure")},
                 "transaction_count_per_image": sum(len(row["original"]["receipts"]) for row in executed),
+                "executed_case_count": len(executed),
                 "original_successful_case_count": sum(all(receipt["error"] is None
                     for receipt in row["original"]["receipts"]) for row in executed),
                 "negative_controls": control,
+                "runtime_verified": bool(executed) and not counts.get("infrastructure_failure", 0)
+                                    and control.get("all_detected") is True,
+                "verification_scope": "executed-corpus",
                 "reduced_counterexample_count": len(reductions),
                 "detailed_receipts": detailed_receipts,
                 "cases": summaries,
@@ -161,6 +225,7 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
             summary["summary_sha256"] = hashlib.sha256(P.canonical_json(summary)).hexdigest()
             publisher.write_json("summary.json", summary)
             publisher.commit({"summary_sha256": summary["summary_sha256"],
+                              "artifact_manifest_sha256": artifact_sha256,
                               "classification_counts": summary["classification_counts"]})
             return summary
 
@@ -168,14 +233,23 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
 def replay_case(case_path: Path, original: Path, candidate: Path,
                 expected_original: str | None = None,
                 expected_candidate: str | None = None) -> dict:
-    case = C.validate_case(json.loads(Path(case_path).read_text()))
-    expected = {key: value for key, value in (("pump_original", expected_original),
-                                                ("pump_candidate", expected_candidate)) if value}
+    require_loaded_sources()
+    case = C.validate_case(P.read_json(case_path))
+    if expected_original not in (None, E.CANONICAL_ORIGINAL_SHA256):
+        raise ValueError("original hash must name the captured Pump image")
+    expected = {"pump_original": E.CANONICAL_ORIGINAL_SHA256}
+    if expected_candidate:
+        expected["pump_candidate"] = expected_candidate
     with P.InputSnapshot(declared_inputs(original, candidate), expected) as snapshot:
+        require_loaded_sources(snapshot)
         result = E.execute_case(case, snapshot.paths["pump_original"],
                                 snapshot.paths["pump_candidate"], _images(snapshot))
         if snapshot.changed_sources():
             raise RuntimeError("declared inputs changed during replay")
+        require_loaded_sources(snapshot)
+        failures = E.validate_result(result, case, images=_images(snapshot))
+        if failures:
+            raise ValueError("invalid replay receipt: " + repr(failures))
         return result
 
 
