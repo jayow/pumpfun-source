@@ -54,6 +54,16 @@ class CampaignTests(unittest.TestCase):
             self.assertFalse((output / "receipts").exists())
             self.assertEqual(len(list((output / "progress").glob("*.json"))), 1)
 
+    def test_start_index_selects_a_disjoint_replayable_tranche(self):
+        with tempfile.TemporaryDirectory() as temp:
+            first = C.run_campaign(original=self.original, candidate=self.original,
+                                   output=Path(temp) / "first", seed=9, count=1)
+            second = C.run_campaign(original=self.original, candidate=self.original,
+                                    output=Path(temp) / "second", seed=9, count=1,
+                                    start_index=1)
+            self.assertNotEqual(first["cases"][0]["case_id"], second["cases"][0]["case_id"])
+            self.assertEqual(second["start_index"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

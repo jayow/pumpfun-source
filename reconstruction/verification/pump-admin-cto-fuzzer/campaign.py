@@ -79,20 +79,22 @@ def negative_controls(result: dict) -> dict:
 
 
 def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, count: int,
+                 start_index: int = 0,
                  expected_original_sha256: str | None = None,
                  expected_candidate_sha256: str | None = None,
                  detailed_receipts: bool = True, reduce_mismatches: bool = True,
                  reduction_budget: int = 500, after_case=None) -> dict:
     if type(count) is not int or not 1 <= count <= 1_000:
         raise ValueError("campaign count must be between 1 and 1000")
-    cases = C.generate_corpus(seed, count)
+    cases = C.generate_corpus(seed, count, start_index)
     expected = {}
     if expected_original_sha256:
         expected["pump_original"] = expected_original_sha256
     if expected_candidate_sha256:
         expected["pump_candidate"] = expected_candidate_sha256
     inputs = declared_inputs(original, candidate)
-    attempt = {"campaign_schema": SCHEMA, "seed": seed, "count": count,
+    attempt = {"campaign_schema": SCHEMA, "seed": seed, "start_index": start_index,
+               "count": count,
                "case_manifest_sha256": hashlib.sha256(C.canonical(cases)).hexdigest()}
     with P.CampaignPublisher(output, attempt) as publisher:
         publisher.write_json("cases.json", cases)
@@ -140,7 +142,7 @@ def run_campaign(*, original: Path, candidate: Path, output: Path, seed: int, co
             summary = {
                 "schema": SCHEMA, "tested_git_sha": _git("rev-parse", "HEAD"),
                 "upstream_sha": _git("merge-base", "HEAD", "origin/main"),
-                "seed": seed, "case_count": count,
+                "seed": seed, "start_index": start_index, "case_count": count,
                 "case_manifest_sha256": attempt["case_manifest_sha256"],
                 "program_sha256": {"original": snapshot.hashes["pump_original"],
                                    "candidate": snapshot.hashes["pump_candidate"]},
@@ -183,12 +185,14 @@ def main() -> int:
     generate = sub.add_parser("generate", help="write a deterministic case manifest to stdout")
     generate.add_argument("--seed", type=int, required=True)
     generate.add_argument("--count", type=int, required=True)
+    generate.add_argument("--start-index", type=int, default=0)
     run = sub.add_parser("run", help="execute and atomically publish a bounded campaign")
     run.add_argument("--original", type=Path, required=True)
     run.add_argument("--candidate", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--seed", type=int, required=True)
     run.add_argument("--count", type=int, required=True)
+    run.add_argument("--start-index", type=int, default=0)
     run.add_argument("--expected-original-sha256")
     run.add_argument("--expected-candidate-sha256")
     run.add_argument("--omit-detailed-receipts", action="store_true")
@@ -203,7 +207,7 @@ def main() -> int:
     replay.add_argument("--expected-candidate-sha256")
     args = parser.parse_args()
     if args.command == "generate":
-        print(json.dumps(C.generate_corpus(args.seed, args.count), sort_keys=True, indent=2))
+        print(json.dumps(C.generate_corpus(args.seed, args.count, args.start_index), sort_keys=True, indent=2))
         return 0
     if args.command == "replay":
         result = replay_case(args.case, args.original, args.candidate,
@@ -212,7 +216,7 @@ def main() -> int:
         return 0 if result["classification"] not in ("infrastructure_failure",) else 1
     summary = run_campaign(
         original=args.original, candidate=args.candidate, output=args.output,
-        seed=args.seed, count=args.count,
+        seed=args.seed, count=args.count, start_index=args.start_index,
         expected_original_sha256=args.expected_original_sha256,
         expected_candidate_sha256=args.expected_candidate_sha256,
         detailed_receipts=not args.omit_detailed_receipts,
