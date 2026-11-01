@@ -281,7 +281,7 @@ struct CtoState{creator:Pubkey,max_fee:u64,mayhem:bool,holder_reward:bool,cashba
 
 
 fn validate(st:&CtoState,shared:bool,holder:bool,fee:Option<u64>,new:Option<Pubkey>,sharing:Pubkey,holder_key:Pubkey)->Result<Plan>{
- let mut sharing_update:Option<Option<Pubkey>>=None;if st.mayhem{return Err(error!(PumpError::CtoNotAllowedForMayhemCoin));}
+ let mut sharing_update:Option<Option<Pubkey>>=None;if st.mayhem{return Err(error!(PumpError::CtoNotAllowedForMayhemCoin));}let _=unsafe{core::ptr::read_volatile(&holder_key as *const Pubkey as *const u8)};/*shim: holder_key byte read placeholder*/
 // Reconstructed positions of the same deployed validations.
 
 
@@ -293,7 +293,7 @@ fn validate(st:&CtoState,shared:bool,holder:bool,fee:Option<u64>,new:Option<Pubk
 
 
 
-  unsafe{core::ptr::read_volatile(st as *const CtoState as *const u8)}/*shim: st byte read at the holder_enabled test, repays the pin*/;if !st.holder_enabled{return Err(error!(PumpError::HolderRewardDisabled));}}
+  if !st.holder_enabled{return Err(error!(PumpError::HolderRewardDisabled));}}
 
  let cashback=!holder&&st.cashback;let (target,is_holder)=if holder{if !(new==None){return Err(error!(PumpError::CtoNewCreatorNotAllowed));}(holder_key,true)}else{
 
@@ -645,7 +645,7 @@ fn validate(st:&CtoState,shared:bool,holder:bool,fee:Option<u64>,new:Option<Pubk
 
 
  swept=(!skip).then(||sweep(&ctx,&holder_key)).transpose()?.unwrap_or(0);fn sweep(ctx:&Context<AdminCto>,holder_key:&Pubkey)->Result<u64>{let a=&ctx.accounts;let native=a.quote_mint.key()==anchor_spl::token::spl_token::native_mint::ID;
-  {let dest=Pubkey::find_program_address(&[b"creator-vault",holder_key.as_ref()],&crate::ID).0;if a.holder_creator_vault.key()!=dest{return Err(error!(anchor_lang::error::ErrorCode::ConstraintSeeds).with_pubkeys((a.holder_creator_vault.key(),dest)));}}
+  let dest=Pubkey::find_program_address(&[b"creator-vault",holder_key.as_ref()],&crate::ID).0;if a.holder_creator_vault.key()!=dest{return Err(error!(anchor_lang::error::ErrorCode::ConstraintSeeds).with_pubkeys((a.holder_creator_vault.key(),dest)));}
   let amm_present=!a.coin_creator_vault_ata.data_is_empty();let amm_frozen=amm_present&&token_frozen(a.coin_creator_vault_ata.as_ref())?;
 
 
@@ -657,11 +657,11 @@ fn validate(st:&CtoState,shared:bool,holder:bool,fee:Option<u64>,new:Option<Pubk
 
 
   match (amm_present,amm_frozen){(_,false)=>if !a.coin_creator_vault_ata.data_is_empty(){crate::pump_amm::cpi::transfer_creator_fees_to_pump_v2(CpiContext::new(aic(a.pump_amm.as_ref()),crate::pump_amm::cpi::accounts::TransferCreatorFeesToPumpV2{payer:a.admin_set_creator_authority.to_account_info(),quote_mint:a.quote_mint.to_account_info(),token_program:aic(a.quote_token_program.as_ref()),system_program:a.system_program.to_account_info(),associated_token_program:aic(a.associated_token_program.as_ref()),coin_creator:aic(&a.current_creator),coin_creator_vault_authority:a.coin_creator_vault_authority.to_account_info(),coin_creator_vault_ata:aic(a.coin_creator_vault_ata.as_ref()),pump_creator_vault:a.creator_vault.to_account_info(),pump_creator_vault_ata:aic(a.creator_vault_quote_token_account.as_ref()),event_authority:a.pump_amm_event_authority.to_account_info(),program:aic(a.pump_amm.as_ref())}))?;}
-  (true,true)=>{require!(token_raw_amount(a.coin_creator_vault_ata.as_ref())?==0,PumpError::CtoSharedVaultFrozen);}(false,true)=>{}}
+  (true,true)=>{require!(token_raw_amount(a.coin_creator_vault_ata.as_ref()).map_err(|e|{let _=unsafe{core::ptr::read_volatile(holder_key as *const Pubkey as *const u8)};/*shim: holder_key byte read placeholder on the error path, repays the pin*/e})?==0,PumpError::CtoSharedVaultFrozen);}(false,true)=>{}}
 
   let vsigner:[&[&[u8]];1];let bump=ctx.bumps.creator_vault;let old=a.current_creator.key();let vaultseeds:&[&[u8]]=&[b"creator-vault",old.as_ref(),&[bump]];vsigner=[vaultseeds];
-  let min=if native{let rent=Rent::get()?;rent.minimum_balance(0)}else{0};let amount;if native{amount=a.creator_vault.lamports().saturating_sub(min);
-   if amount>0{crate::legacy_buy::native_payments::ensure_rent_exempt(&a.system_program,&a.admin_set_creator_authority,&a.holder_creator_vault)?;crate::collect_v2::transfer_native(a.system_program.as_ref(),&a.creator_vault,&a.holder_creator_vault,amount,&vsigner).map(|()|amount)}else{Ok(0)}}else{amount=token_raw_amount(a.creator_vault_quote_token_account.as_ref())?;let frozen=token_frozen(a.creator_vault_quote_token_account.as_ref())?;
+  if native{let min={let rent=Rent::get()?;rent.minimum_balance(0)};let amount=a.creator_vault.lamports().saturating_sub(min);
+   return (if amount>0{crate::legacy_buy::native_payments::ensure_rent_exempt(&a.system_program,&a.admin_set_creator_authority,&a.holder_creator_vault)?;crate::collect_v2::transfer_native(a.system_program.as_ref(),&a.creator_vault,&a.holder_creator_vault,amount,&vsigner)}else{Ok(())}).map(|()|amount);}else{let amount=token_raw_amount(a.creator_vault_quote_token_account.as_ref())?;let frozen=token_frozen(a.creator_vault_quote_token_account.as_ref())?;
 
 
 
@@ -716,7 +716,7 @@ fn validate(st:&CtoState,shared:bool,holder:bool,fee:Option<u64>,new:Option<Pubk
 
 
 
-   if frozen{require!(amount==0,PumpError::CtoSharedVaultFrozen);}else if amount>0{anchor_spl::associated_token::create_idempotent(CpiContext::new(a.associated_token_program.to_account_info(),anchor_spl::associated_token::Create{payer:a.admin_set_creator_authority.to_account_info(),associated_token:a.holder_creator_vault_quote_token_account.to_account_info(),authority:a.holder_creator_vault.to_account_info(),mint:a.quote_mint.to_account_info(),system_program:a.system_program.to_account_info(),token_program:a.quote_token_program.to_account_info()})).and_then(|()|crate::collect_v2::transfer_vault_tokens(&a.quote_token_program,&a.creator_vault_quote_token_account,&a.holder_creator_vault_quote_token_account,&a.creator_vault,a.quote_mint.decimals,a.quote_mint.as_ref().as_ref(),amount,&vsigner))?;return Ok(amount);}
+   if frozen{require!(amount==0,PumpError::CtoSharedVaultFrozen);return Ok(amount);}else if amount>0{anchor_spl::associated_token::create_idempotent(CpiContext::new(a.associated_token_program.to_account_info(),anchor_spl::associated_token::Create{payer:a.admin_set_creator_authority.to_account_info(),associated_token:a.holder_creator_vault_quote_token_account.to_account_info(),authority:a.holder_creator_vault.to_account_info(),mint:a.quote_mint.to_account_info(),system_program:a.system_program.to_account_info(),token_program:a.quote_token_program.to_account_info()}))?;crate::collect_v2::transfer_vault_tokens(&a.quote_token_program,&a.creator_vault_quote_token_account,&a.holder_creator_vault_quote_token_account,&a.creator_vault,a.quote_mint.decimals,a.quote_mint.as_ref().as_ref(),amount,&vsigner)?;}else{return Ok(amount);}
    Ok(amount)}
 
 
