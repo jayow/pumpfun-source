@@ -36,11 +36,11 @@ those programs. There is no frontend, backend, SDK or off-chain service code.
 Matched windows cover **5,185,728/5,213,128 code bytes (99.47%)**.
 The latest fresh Pump Main identity build preserves all matched windows, with
 no raw or normalized losses. Only `admin_cto::execute` remains unmatched
-(27,400 bytes); its instruction-token similarity is **69.542%**, adding **50
-matched tokens** since CP110 (68.065%). Positional byte differences increase
-from 3,170 to **3,224**; no new exact window is claimed.
-All **388 targeted signed synthetic admin-CTO pairs** pass for this new candidate
-image, with all **776 nonempty signature vectors** verified. A separate signed
+(27,400 bytes); its instruction-token similarity is **69.901%**, adding **12
+matched tokens** since CP111 (69.542%). Positional byte differences change from
+3,224 to **3,173**; no new exact window is claimed.
+All **388 targeted signed synthetic admin-CTO pairs** pass for this exact new
+image, with **776 nonempty signature vectors** verified. A separate signed
 cross-program lifecycle and independent replay also pass. This is bounded
 runtime evidence; pinned compiler/layout and valid-context limits remain.
 The new unlinked reference models add captured-program test coverage without
@@ -48,7 +48,7 @@ increasing compiled completion. Pump Main's meaningful ELF is not yet equal.
 
 AMM, Fees, Mayhem and Donation Relay retain their exact meaningful-ELF
 checkpoints. Separate bounded tests do not replace those identity receipts. See the
-[latest scores, runtime coverage and limits](reconstruction/pump-main/checkpoints/completion-pass111-20261101/README.md),
+[latest scores, runtime coverage and limits](reconstruction/pump-main/checkpoints/completion-pass112-20261101/README.md),
 [other-program checkpoint provenance](reconstruction/pump-main/checkpoints/completion-20261030/other-programs.json)
 and [Fees Linux rebuild packet](research/fees-linux-fresh-rebuild-20261030/README.md).
 
