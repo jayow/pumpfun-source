@@ -144,3 +144,40 @@ malformed ELFs, invalid symbol boundaries, input/output aliasing, deterministic
 JSON, and false-positive rejection. A captured Admin CTO regression asserts
 that every direct proven access exactly preserves `stack_access.py`'s existing
 inventory before checking the newly available facts.
+
+## Independent pass111 admission repair
+
+Implementation `f37b06e4c584955e80dd02c48ac93e406fa2358c` independently
+reproduced the real pair above using actual source-only imports. Two CLI runs
+produced byte-identical reports with SHA-256
+`432a280f6ee7290b52334406497c0aaf1e605ffa8b033505a3ee3ac0796b43e4` and
+analyzer source manifest
+`0c919662012d8a89dd851564c89adea7f797e9e0b695afb536c90b81527e1bfa`.
+All real-pair inventory and heuristic counts above remain unchanged. The full
+source graph now includes the report publisher, input-admission helpers, and
+the reused private source context.
+
+Six regression methods reproduced 15 false-fact subcases in the authored
+engine: partial pointer spills, untruncated narrow constants, negative MOV32
+immediates, shift counts at the register width, wrapping pointer arithmetic,
+and memory retained across calls with unknown aliases. The repaired engine
+passes those controls. The arithmetic rules are pinned to the
+[legacy interpreter](https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/interpreter.rs)
+and [version features](https://github.com/anza-xyz/sbpf/blob/v0.12.2/src/program.rs)
+of `solana-sbpf` 0.12.2; they do not claim support for later instruction sets.
+
+The counted new suite passes 36 methods with no skips. Adjacent static suites
+also pass: 108 combined execution records cover 97 unique methods, including
+11 repeated records from an imported test class. Actual CLI controls first
+proved malicious timestamp caches executable, then verified raw-source
+analysis under normal Python, `-O`, and `-OO` without executing those caches.
+Canonical alias poisoning, source edits during bootstrap, and edits before
+ELF argument admission are rejected. No program VM execution or compiler build
+was performed for this tooling qualification.
+
+The independent machine-readable record is
+[`sbpf-stack-register-admin-cto-pass111.json`](qualification/sbpf-stack-register-admin-cto-pass111.json).
+The author's original qualification JSON remains unchanged. Per-image results
+are facts under this conservative static model; cross-image correspondences
+remain heuristic. Neither layer establishes runtime memory safety or changes
+completion scoring.
