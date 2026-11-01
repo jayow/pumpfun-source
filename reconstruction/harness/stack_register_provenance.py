@@ -14,25 +14,45 @@ import hashlib
 import json
 from pathlib import Path
 import struct
-
-from compare_scores import publish_report
-from residual_analysis import (admit_inputs, build_function_model, compare_graphs,
-                               parse_window, public_image)
-from sbpf_provenance import analyze, public_analysis
-from score_admission import report_destination
-
+import types
 
 SCHEMA = 'sbpf-stack-register-provenance-v1'
 SOURCE_FILES = (
     'stack_register_provenance.py', 'sbpf_provenance.py', 'residual_analysis.py',
     'control_flow.py', 'instruction_stream.py', 'elf_symbols.py', 'score.py',
+    'compare_scores.py', 'score_admission.py', 'original_input.py', 'llvm_tools.py',
+    'fresh_control_inputs.py',
 )
+_ROOT = Path(__file__).resolve().parent
+_SELF_BYTES = globals().get('_ADMITTED_SOURCE_BYTES')
+if _SELF_BYTES is None:
+    _SELF_BYTES = Path(__file__).read_bytes()
+# Reuse the maintained source-only context with this diagnostic's scoped graph.
+_loader_path = _ROOT / 'fresh_control_inputs.py'
+_loader_raw = _loader_path.read_bytes()
+_loader = types.ModuleType('_pump_stack_provenance_source_context')
+_loader.__file__ = str(_loader_path)
+_loader.__dict__['_ADMITTED_SOURCE_BYTES'] = _loader_raw
+exec(compile(_loader_raw, str(_loader_path), 'exec', dont_inherit=True), _loader.__dict__)
+_loader.MODULES = tuple(Path(name).stem for name in SOURCE_FILES if name != 'fresh_control_inputs.py')
+_SOURCE_CONTEXT = _loader.load_context()
+_SOURCE_CONTEXT.raw['stack_register_provenance'] = _SELF_BYTES
+_SOURCE_CONTEXT.hashes['stack_register_provenance.py'] = hashlib.sha256(_SELF_BYTES).hexdigest()
+_SOURCE_CONTEXT.recheck()
+_compare = _SOURCE_CONTEXT.load('compare_scores')
+_residual = _SOURCE_CONTEXT.load('residual_analysis')
+_provenance = _SOURCE_CONTEXT.load('sbpf_provenance')
+publish_report = _compare.publish_report
+admit_inputs, build_function_model, compare_graphs, parse_window, public_image = (
+    getattr(_residual, name) for name in
+    ('admit_inputs', 'build_function_model', 'compare_graphs', 'parse_window', 'public_image'))
+analyze, public_analysis = _provenance.analyze, _provenance.public_analysis
+report_destination = _SOURCE_CONTEXT.load('score_admission').report_destination
 
 
 def source_provenance():
-    root = Path(__file__).resolve().parent
-    rows = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in SOURCE_FILES}
+    _SOURCE_CONTEXT.recheck()
+    rows = dict(_SOURCE_CONTEXT.hashes)
     digest = hashlib.sha256(json.dumps(
         rows, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return {'files': rows, 'manifest_sha256': digest}
@@ -234,6 +254,7 @@ def actionable_locations(stack_residuals, liveness_differences, starts, limit=50
 def analyze_pair(original_path, candidate_path, original_selector, candidate_selector,
                  *, expected_original_sha256=None, expected_candidate_sha256=None,
                  score_receipts=()):
+    _SOURCE_CONTEXT.recheck()
     original_image, candidate_image, ow, cw, receipts = admit_inputs(
         original_path, candidate_path, original_selector, candidate_selector, score_receipts)
     for role, image, expected in (('original', original_image, expected_original_sha256),
@@ -246,7 +267,7 @@ def analyze_pair(original_path, candidate_path, original_selector, candidate_sel
     candidate_analysis = analyze(cw['raw'], cw['start'])
     stack_residuals = compare_stack_accesses(original_analysis, candidate_analysis, control_flow)
     liveness_differences = compare_liveness(original_analysis, candidate_analysis, control_flow)
-    return {
+    report = {
         'schema': SCHEMA,
         'scope': ('Static legacy-SBPF diagnostic facts. No runtime safety, source-variable identity, '
                   'complete alias analysis, compiler allocation decision, bytecode equality, or runtime equivalence is claimed.'),
@@ -284,11 +305,13 @@ def analyze_pair(original_path, candidate_path, original_selector, candidate_sel
             {'original': ow['start'], 'candidate': cw['start']}),
         'limitations': [
             'Potential and unknown accesses are never counted as proven stack accesses.',
-            'Calls clobber r0-r5; a proven stack-pointer argument invalidates tracked stack memory.',
+            'Calls clobber r0-r5 and invalidate all tracked stack-memory values; known stack-pointer arguments are recorded.',
             'Suspected spill/reload patterns prove only a same-range reaching store and load.',
             'Cross-image frame and liveness rows depend on explicitly labelled heuristic block correspondence.',
         ],
     }
+    _SOURCE_CONTEXT.recheck()
+    return report
 
 
 def build_parser():
@@ -309,10 +332,12 @@ def build_parser():
 
 
 def main(argv=None):
+    _SOURCE_CONTEXT.recheck()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        report_destination(args.json, [args.original, args.candidate, *args.score_receipt])
+        report_destination(args.json, [args.original, args.candidate, *args.score_receipt,
+                                      *(_ROOT / name for name in SOURCE_FILES)])
         report = analyze_pair(
             args.original, args.candidate,
             _selector(args.original_window, args.original_symbol),
@@ -322,6 +347,7 @@ def main(argv=None):
             score_receipts=args.score_receipt)
         output = json.dumps(report, indent=2, sort_keys=True) + '\n'
         if args.json:
+            _SOURCE_CONTEXT.recheck()
             publish_report(args.json, output)
     except (OSError, ValueError, KeyError, struct.error, json.JSONDecodeError) as error:
         parser.exit(2, f'stack_register_provenance.py: error: {error}\n')

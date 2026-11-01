@@ -181,9 +181,9 @@ def _constant_binary(operation, left, right, bits):
     elif operation == 0x50:
         value = left & right
     elif operation == 0x60:
-        value = left << right if right < bits else 0
+        value = left << (right & (bits - 1))
     elif operation == 0x70:
-        value = left >> right if right < bits else 0
+        value = left >> (right & (bits - 1))
     elif operation == 0x90:
         if right == 0:
             return None
@@ -191,7 +191,7 @@ def _constant_binary(operation, left, right, bits):
     elif operation == 0xa0:
         value = left ^ right
     elif operation == 0xc0:
-        value = (_signed(left, bits) >> right) if right < bits else (-1 if left & (1 << (bits - 1)) else 0)
+        value = _signed(left, bits) >> (right & (bits - 1))
     else:
         return None
     return value & mask
@@ -323,6 +323,12 @@ class Transfer:
                     else:
                         value = registers[row['src']]
                         sources = (row['src'],)
+                        # Narrow stores retain only their low bytes. A partial
+                        # pointer cannot be reconstructed as the original pointer.
+                        if value.kind == 'constant':
+                            value = replace(value, value=value.value & ((1 << (width * 8)) - 1))
+                        elif width != 8:
+                            value = unknown(row['offset'])
                     memory[key] = MemoryFact(with_definition(value, row['offset']), (row['offset'],), sources)
             return state(registers, memory)
         if cls in (4, 7):
@@ -336,7 +342,8 @@ class Transfer:
                         source = unknown(row['offset'], ambiguous=True)
                     reason = 'register_copy'
                 else:
-                    source, reason = constant(row['immediate'], row['offset']), 'immediate_constant'
+                    source = constant(row['immediate'] & ((1 << bits) - 1), row['offset'])
+                    reason = 'immediate_constant'
                 self.set_register(registers, dst, source, row, reason)
             elif operation == 0x80:  # NEG
                 source = registers[dst]
@@ -352,7 +359,7 @@ class Transfer:
                 if bits == 64 and left.kind == 'stack_pointer' and right.kind == 'constant' \
                         and operation in (0x00, 0x10):
                     delta = right.value if operation == 0x00 else -right.value
-                    result = derived_fact('stack_pointer', left.value + _signed(delta, 64), (left, right))
+                    result = derived_fact('stack_pointer', _signed(left.value + delta, 64), (left, right))
                     reason = 'stack_pointer_arithmetic'
                 elif left.kind == right.kind == 'constant':
                     value = _constant_binary(operation, left.value, right.value, bits)
@@ -371,12 +378,14 @@ class Transfer:
                     if fact.kind == 'stack_pointer' or fact.stack_candidates:
                         escaped.append({'register': register, 'fact': fact.public()})
                 if escaped:
-                    memory.clear()
                     if self.collect:
                         self.escapes.append({'instruction_offset': row['offset'], 'address': row['address'],
                                              'call_kind': 'indirect' if opcode == 0x8d else 'direct_or_syscall',
                                              'arguments': escaped,
                                              'effect': 'tracked_stack_memory_invalidated'})
+                # Unknown arguments or an earlier escaped alias can also let a
+                # callee write the frame. Retain no stack-memory value across a call.
+                memory.clear()
                 for register in CALLER_SAVED:
                     registers[register] = unknown(row['offset'], ambiguous=True)
             return state(registers, memory)

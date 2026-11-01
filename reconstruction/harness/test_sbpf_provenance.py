@@ -203,5 +203,58 @@ class CapturedAdminCtoTests(unittest.TestCase):
         self.assertGreater(len(report['suspected_spill_reload_patterns']), 20)
 
 
+class WidthAndAliasRegressionTests(unittest.TestCase):
+    def test_partial_pointer_spills_do_not_recover_a_whole_stack_pointer(self):
+        for store, load in ((0x73, 0x71), (0x6b, 0x69), (0x63, 0x61)):
+            raw = (instruction(0xbf, 1, 10) + instruction(store, 10, 1, -8)
+                   + instruction(load, 2, 10, -8) + instruction(0x79, 3, 2) + EXIT)
+            with self.subTest(store=store):
+                report = provenance.analyze(raw)
+                self.assertFalse(any(row['base_register'] == 2 for row in report['stack_accesses']['proven']))
+                self.assertEqual(report['stack_accesses']['unknown'][-1]['base_register'], 2)
+                self.assertFalse(any(row.get('recovered_stack_pointer')
+                                     for row in report['stack_accesses']['proven']))
+
+    def test_narrow_constant_stores_retain_only_the_written_low_bytes(self):
+        for width, store, load in ((1, 0x73, 0x71), (2, 0x6b, 0x69), (4, 0x63, 0x61)):
+            raw = (lddw(1, (1 << (width * 8)) + 7) + instruction(store, 10, 1, -8)
+                   + instruction(load, 2, 10, -8) + EXIT)
+            with self.subTest(width=width):
+                report = provenance.analyze(raw)
+                self.assertEqual(report['register_states'][0]['exit_known_registers']['2']['value'], 7)
+
+    def test_mov32_negative_immediate_is_zero_extended(self):
+        report = provenance.analyze(instruction(0xb4, 1, immediate=-1) + EXIT)
+        self.assertEqual(report['register_states'][0]['exit_known_registers']['1']['value'], 0xffffffff)
+
+    def test_legacy_register_shifts_mask_the_shift_count(self):
+        # solana-sbpf v0.12.2 interpreter uses wrapping_shl/wrapping_shr
+        # for both legacy widths; ARSH first casts to the signed width.
+        for bits, shift in ((32, 0x6c), (64, 0x6f), (32, 0x7c), (64, 0x7f),
+                            (32, 0xcc), (64, 0xcf)):
+            raw = (instruction(0xb7, 1, immediate=8) + instruction(0xb7, 2, immediate=bits)
+                   + instruction(shift, 1, 2) + EXIT)
+            with self.subTest(bits=bits, shift=shift):
+                report = provenance.analyze(raw)
+                self.assertEqual(report['register_states'][0]['exit_known_registers']['1']['value'], 8)
+
+    def test_unknown_call_arguments_do_not_preserve_tracked_frame_memory(self):
+        raw = (instruction(0xbf, 6, 10) + instruction(0x7b, 10, 6, -8)
+               + instruction(0x85) + instruction(0x79, 2, 10, -8)
+               + instruction(0x79, 3, 2) + EXIT)
+        report = provenance.analyze(raw)
+        self.assertFalse(any(row['base_register'] == 2 for row in report['stack_accesses']['proven']))
+        self.assertEqual(report['stack_accesses']['unknown'][-1]['base_register'], 2)
+        self.assertFalse(any(row.get('recovered_stack_pointer')
+                             for row in report['stack_accesses']['proven']))
+
+    def test_stack_pointer_addition_obeys_modulo_64_bit_arithmetic(self):
+        raw = (instruction(0xbf, 1, 10) + lddw(2, 1 << 63)
+               + instruction(0x0f, 1, 2) + instruction(0x0f, 1, 2)
+               + instruction(0x79, 3, 1, -8) + EXIT)
+        report = provenance.analyze(raw)
+        self.assertEqual(report['stack_accesses']['proven'][0]['stack_offset'], -8)
+
+
 if __name__ == '__main__':
     unittest.main()

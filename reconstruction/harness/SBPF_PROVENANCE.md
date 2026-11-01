@@ -29,8 +29,12 @@ Supported transfers include LDDW, MOV, constant ALU operations, stack-pointer
 addition/subtraction, register copies, direct and derived memory operations,
 and exact-width pointer spills/reloads. Overlapping writes invalidate tracked
 memory. Unsupported operations destroy their encoded destination fact. Calls
-clobber `r0`–`r5`; when `r1`–`r5` contains a proven or potential stack pointer,
-the report records an escape and invalidates tracked stack memory.
+clobber `r0`–`r5` and invalidate all tracked stack-memory values because unknown
+arguments or an earlier escaped alias can permit writes. Known stack-pointer
+arguments additionally produce explicit escape records. Only full eight-byte
+pointer spills/reloads retain pointer provenance; narrow constant stores are
+truncated to their actual width. Legacy shifts use the pinned interpreter's
+wrapping shift semantics, and MOV32 immediates are zero-extended.
 
 The report separates memory operations into:
 
@@ -55,8 +59,12 @@ explicitly heuristic block mapping plus local instruction alignment. Every such
 row carries `classification: heuristic_correspondence`, its confidence, and the
 block-match method. Unmatched operations never become exact absence claims.
 
-The report binds both ELF hashes and a manifest of the analyzer and maintained
-decoder/CFG/scorer sources. Function selectors must resolve to complete logical
+The report binds both ELF hashes and the actual compiled source bytes of its
+analyzer and maintained decoder/CFG/scorer graph. It reuses the private
+source-only `fresh_control_inputs.SourceContext` with a scoped module list;
+executable timestamp caches and preexisting canonical aliases cannot replace
+that graph. Source changes are rejected before admission and after analysis.
+Function selectors must resolve to complete logical
 instruction boundaries; the candidate range must be an unstripped ELF function
 symbol. Output paths cannot alias inputs and existing outputs are refused.
 
@@ -77,7 +85,11 @@ Selectors may be explicit `START:SIZE` ranges or exact symbol names. Optional
 bind the candidate digest and selected original window. Official score
 normalization and acceptance rules are not modified.
 
-## Admin CTO qualification
+## Author's historical Admin CTO qualification
+
+The following measurements are retained as authored. The independent admission
+repair and fresh report are recorded separately below; their source manifests
+and report digests are not substituted into this historical record.
 
 The retained run compared captured Pump Main `0x22a10` (27,400 bytes) with the
 source-built candidate used by the deterministic Admin CTO fuzzer. Inputs:
@@ -122,7 +134,7 @@ derived stack alias; that negative result is retained rather than inflated.
 
 ```sh
 python -B scripts/run_discovered_tests.py reconstruction/harness \
-  'test_*provenance.py' --expect 26
+  'test_*provenance.py' --expect 36
 ```
 
 Synthetic coverage includes MOV chains, stack arithmetic, constants, joins,
