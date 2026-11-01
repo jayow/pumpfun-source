@@ -65,7 +65,8 @@ must be rejected.
 
 Qualified immutable inputs:
 
-- upstream base: `aab087f32d0ec96c723a4628582cfc2410bb2cc5`
+- audit/build base: `aab087f32d0ec96c723a4628582cfc2410bb2cc5`
+- final upstream synchronization: `5e05222b54c4549cbec293160bb5fc65b4921792`
 - captured Relay ELF: `367f07a62e3f74d358187d175cf3228848e81a56c781a9a75b9df7fed1268563`
 - captured SPL Token ELF: `8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697`
 - captured ATA ELF: `6804554e69fd3a58caa191dc4a58f4c67223d30ca28ab8987f39fc18d2f7374d`
