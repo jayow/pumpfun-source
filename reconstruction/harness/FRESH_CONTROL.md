@@ -80,9 +80,18 @@ the authoritative build/score decision. It retains:
 
 Reports are published atomically. Repeating the same admitted inputs with the
 same artifact bytes produces the same inner receipt; host paths and elapsed time
-are excluded. Verify a retained result by independently loading both score
-reports with `compare_scores.py` and confirming its comparison equals the one in
-the receipt.
+are excluded. Independently re-hash every retained artifact, source snapshot,
+binary, score, toolchain input, and scorer input and recompute the decision with:
+
+```sh
+python -B reconstruction/harness/verify_fresh_control.py \
+  reconstruction/integ/contributor-composition-001/fresh-control
+```
+
+The verifier does not trust the producer's acceptance boolean or comparison. It
+loads both score reports through `compare_scores.py` and derives the decision
+again. For a standalone pair outside `reconstruction/integ`, supply
+`--base-source` and `--candidate-source` explicitly.
 
 This mode intentionally performs two cold Pump builds and should be scheduled as
 the only heavy SBF build on a host. Saved score summaries cannot substitute for
