@@ -553,14 +553,14 @@ fn validate(st:&CtoState,hopt:Option<bool>,fee:Option<u64>,new:Option<Pubkey>,ho
 
 
 
- if collect_old{wallet(&ctx)?;}fn wallet(ctx:&Context<AdminCto>)->Result<()>{let a=&ctx.accounts;if a.current_creator.executable{msg!("Creator is a program; fees left in the vaults");}else if a.current_creator.owner!=&anchor_lang::system_program::ID{msg!("Creator is not a system-owned wallet; fees left in the vaults");}else{if !a.current_creator.is_writable{return Err(error!(PumpError::CtoCreatorAccountNotWritable));}if match token_frozen(a.current_creator_quote_token_account.as_ref()){Ok(v)=>v,Err(e)=>{let mut r=core::mem::MaybeUninit::<anchor_lang::error::Error>::uninit();unsafe{core::ptr::write_volatile(r.as_mut_ptr(),e)};/*shim: wallet creator-ata token_frozen ? residual kept in memory*/return Err(unsafe{r.assume_init()})}}{msg!("Creator quote token account is frozen; fees left in the vaults");}else{
+ if collect_old{wallet(&ctx,hkx.as_mut_ptr().cast::<u64>())?;}fn wallet(ctx:&Context<AdminCto>,hkb:*mut u64)->Result<()>{let a=&ctx.accounts;if a.current_creator.executable{msg!("Creator is a program; fees left in the vaults");}else if a.current_creator.owner!=&anchor_lang::system_program::ID{msg!("Creator is not a system-owned wallet; fees left in the vaults");}else{if !a.current_creator.is_writable{return Err(error!(PumpError::CtoCreatorAccountNotWritable));}if match token_frozen(a.current_creator_quote_token_account.as_ref()){Ok(v)=>v,Err(e)=>{let mut r=core::mem::MaybeUninit::<anchor_lang::error::Error>::uninit();unsafe{core::ptr::write_volatile(r.as_mut_ptr(),e)};/*shim: wallet creator-ata token_frozen ? residual kept in memory*/return Err(unsafe{r.assume_init()})}}{msg!("Creator quote token account is frozen; fees left in the vaults");}else{
   let collection_native={let mut c=false;unsafe{core::ptr::write_volatile(&mut c,a.quote_mint.key()==anchor_spl::token::spl_token::native_mint::ID)};/*shim: wallet quote==native compare kept in memory*/c};
   let coin_present=!a.coin_creator_vault_ata.data_is_empty();
   let do_collect=collection_native||(!a.creator_vault_quote_token_account.data_is_empty()&&!token_frozen(a.creator_vault_quote_token_account.as_ref())?);
   let do_coin=coin_present&&!token_frozen(a.coin_creator_vault_ata.as_ref())?;
   if !collection_native||coin_present{anchor_spl::associated_token::create_idempotent(CpiContext::new(a.associated_token_program.to_account_info(),anchor_spl::associated_token::Create{payer:a.admin_set_creator_authority.to_account_info(),associated_token:a.current_creator_quote_token_account.to_account_info(),authority:a.current_creator.to_account_info(),mint:a.quote_mint.to_account_info(),system_program:a.system_program.to_account_info(),token_program:a.quote_token_program.to_account_info()}))?;}
   if do_collect{
-    let event_signers:[&[&[u8]];1];if let Some((collected,quote_mint))=crate::collect_v2::collect(&a.current_creator,a.current_creator_quote_token_account.as_ref(),&a.creator_vault,ctx.bumps.creator_vault,a.creator_vault_quote_token_account.as_ref(),a.quote_mint.decimals,a.quote_mint.as_ref().as_ref(),&a.quote_token_program,a.system_program.as_ref())?{
+    let mut event_signers=core::mem::MaybeUninit::<[u64;2]>::uninit();/*shim: 16 B frame stand-in in event_signers' place (the host of validate's 7 B target piece at -0x540)*/if let Some((collected,quote_mint))=crate::collect_v2::collect(&a.current_creator,a.current_creator_quote_token_account.as_ref(),&a.creator_vault,ctx.bumps.creator_vault,a.creator_vault_quote_token_account.as_ref(),a.quote_mint.decimals,a.quote_mint.as_ref().as_ref(),&a.quote_token_program,a.system_program.as_ref())?{
      let e=CollectCreatorFeeEvent{timestamp:Clock::get()?.unix_timestamp,creator:a.current_creator.key(),creator_fee:collected,quote_mint};emit!(e);
      {
          let authority_info=ctx.accounts.event_authority.to_account_info();
@@ -570,8 +570,8 @@ fn validate(st:&CtoState,hopt:Option<bool>,fee:Option<u64>,new:Option<Pubkey>,ho
          let ix_data:Vec<u8>=disc.into_iter().map(|b|*b).chain(inner_data.into_iter()).collect();
          let ix=anchor_lang::solana_program::instruction::Instruction::new_with_bytes(crate::ID,&ix_data,vec![anchor_lang::solana_program::instruction::AccountMeta::new_readonly(*authority_info.key,true)]);
          let event_infos=[authority_info];({let event_inner:&[&[u8]]=&[b"__event_authority",&[authority_bump]];
-         event_signers=[event_inner];
-         anchor_lang::solana_program::program::invoke_signed(&ix,&event_infos,&event_signers)}).map_err(anchor_lang::error::Error::from)?;
+         let es=unsafe{hkb.add(4)}.cast::<[&[&[u8]];1]>();/*shim: the wallet event signer array lives in the holder-key slot tail at -0x680 (original offset)*/unsafe{es.write([event_inner]);vann(event_signers.as_mut_ptr() as *const u8,b"\0".as_ptr(),b"\0".as_ptr(),0,core::ptr::null())}/*shim: var.annotation keeps the event_signers stand-in through SROA (no instruction)*/;
+         anchor_lang::solana_program::program::invoke_signed(&ix,&event_infos,unsafe{&*es})}).map_err(anchor_lang::error::Error::from)?;
      }
     }
   }
