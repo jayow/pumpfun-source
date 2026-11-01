@@ -5,7 +5,6 @@ import unittest
 import tempfile
 from pathlib import Path
 
-import build_candidate
 import fixture
 import producer
 
@@ -44,12 +43,10 @@ class DeclarationTests(unittest.TestCase):
         self.assertIn("programs/donation-relay/Cargo.toml", rows)
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
 
-    def test_candidate_builder_refuses_existing_output_before_building(self):
+    def test_build_receipt_claim_is_refused_before_execution(self):
         with tempfile.TemporaryDirectory() as directory:
-            occupied = Path(directory) / "occupied"
-            occupied.mkdir()
-            with self.assertRaises(SystemExit):
-                build_candidate.run(producer.ROOT, occupied, Path(directory) / "missing-sdk")
+            with self.assertRaisesRegex(ValueError, "not authenticated"):
+                producer.execute(producer.ROOT, Path("unused"), Path(directory) / "out.json", Path("fake-build.json"))
 
 
 if __name__ == "__main__":

@@ -1,113 +1,89 @@
 # Donation Relay multi-donor stateful differential
 
-## Coverage audit
+This finite synthetic fixture compares the captured Donation Relay with a
+supplied executable in independent persistent LiteSVMs. Three test-owned donors,
+a distinct payer, two configurations and two mints exercise shared accounting
+and isolation beyond the preceding single-donor stateful fixtures.
 
-The merged `donation-relay-stateful` fixture owns one donor keypair and one
-source token account. Its repeated donation case therefore exercises shared
-state only through one authority. `donation-relay-xtx-sequences` reuses that
-fixture: its two- and three-instruction transactions repeat the same donor and
-the same source account. Neither package establishes isolation or conservation
-across independently signed donor accounts, configurations, or mints.
+The suite authenticates runtime inputs and receipts. Its `supplied_binary_only`
+mode does not authenticate a source build or establish whole-program byte
+identity. The optional builder and JSON build-receipt admission from the initial
+proposal were removed: a report cannot prove compilation merely by naming tools
+and claiming output hashes. `--build-receipt` is explicitly refused.
 
-This package fills that boundary without modifying either predecessor. It uses
-three deterministic test-owned Ed25519 donors, a distinct fee payer, canonical
-SPL token accounts, and canonical epoch/debouncer/destination PDAs. Each donor
-appearing in a transaction supplies its own real signature. Signature and
-blockhash checks remain enabled in two independent persistent LiteSVMs.
+The production relayer private key is unavailable. Successful closure,
+distribution, whitelist changes and Jupiter settlement remain unsupported;
+only the actual unauthorized close rejection is tested. No production or PDA
+signer is fabricated. No RPC is contacted.
 
-The production relayer key is not retained. Successful whitelist mutation,
-epoch closure, distribution, and swap settlement remain unsupported fixtures;
-only a genuine non-production signer rejection is exercised. No signer bit or
-PDA signature is fabricated.
-
-## Qualified lifecycle inventory
-
-All cases use fresh transaction identities and preserve each VM between the
-listed steps. A failed step is followed by a full watched-account rollback
-check before the next step executes.
-
-| Case | Persistent sequence | Captured-program result |
+| Case | Sequence | Captured-program observation |
 | --- | --- | --- |
-| `same_epoch_a_then_b` | A deposits, then B deposits | both succeed |
-| `interleaved_a_b_a` | A, B, then A again | all succeed |
-| `three_donors_one_transaction` | A + B + C atomically | succeeds with three donor signatures |
-| `a_success_b_fail_c_success` | A, invalid B, C | success / `6009` / success |
-| `atomic_rollback_invalid_third` | A + B + invalid C atomically | `6009`; all three changes roll back |
-| `different_balance_boundaries` | exact, overdrawn, zero | success / token `1` / success |
-| `authority_substitution` | A signs for B's source, then B retries | `2015` / success |
-| `separate_configurations` | A/config A, B/config B | both succeed; PDA state remains isolated |
-| `separate_mints` | A/mint X, B/mint Y | both succeed; supply domains remain isolated |
-| `zero_and_u64_boundary` | zero, `u64::MAX`, one | success / token `1` / success |
-| `rejected_close_between_donors` | A, outsider close, B | success / `2012` / success |
-| `failed_donor_retry` | A, overdrawn B, fresh B retry | success / token `1` / success |
+| `same_epoch_a_then_b` | A, B | success, success |
+| `interleaved_a_b_a` | A, B, A | three successes |
+| `three_donors_one_transaction` | A+B+C atomically | success, four real signatures including payer |
+| `a_success_b_fail_c_success` | A, invalid B, C | success, custom6009, success |
+| `atomic_rollback_invalid_third` | A+B+invalid C | custom6009 at instruction3, full rollback |
+| `different_balance_boundaries` | exact, overdrawn, zero | success, token1, success |
+| `authority_substitution` | B signs for A's source, B retry | custom2015, success |
+| `separate_configurations` | A/configA, B/configB | isolated successes |
+| `separate_mints` | A/mintX, B/mintY | isolated successes |
+| `zero_and_u64_boundary` | zero, u64MAX, one | success, token1, success |
+| `rejected_close_between_donors` | A, outsider close, B | success, custom2012, success |
+| `failed_donor_retry` | A, overdrawn B, fresh B | success, token1, success |
 
-The qualified run contains 12 equal cases, 28 unique signed transactions, 60
-individual signatures, and 11 cases with at least one original-positive
-transaction. It found zero strict original/candidate mismatches. The production
-relayer-only closure/distribution and Jupiter settlement families are recorded
-as unsupported scope boundaries and do not increase the passing count.
+A successful run contains twelve equal cases, 28 distinct signed transactions
+per image, sixty individual signatures in those shared transactions, and eleven
+cases with a positive original execution. This is bounded runtime evidence.
+Raw compute consumption is diagnostic; errors, semantic logs/events, return
+values, inner instructions, balances, ownership and full watched state are
+strict. First prestates are independently reconstructed from the canonical
+constructor without executing a transaction. Executable membership and metadata
+are bound separately to each actual image. Each complete signed message,
+compute prefix, account flags, required signers, blockhash, fixture role, plan,
+fee delta, error index/code, rollback, state transition and summary is rechecked.
 
-## Evidence and invariants
+Raw source modules are loaded into private temporary namespaces; executable
+Python caches and canonical module aliases are not admitted inputs. Production
+and verification pin their complete code/source/image inventories before and
+after use. Saved receipt bytes are also checked after verification. Outputs must
+remain outside the repository, and existing outputs are refused. Normal Python
+is required; optimized execution exits before transactions.
 
-For every step the producer retains the signed transaction and message bytes,
-exact errors, non-compute logs, events, return data, inner instructions, fee,
-and complete before/after snapshots of watched accounts. The independent
-verifier decodes the signed transaction again and validates its signatures,
-compiled instructions, donor/source ownership, canonical PDAs and ATAs,
-blockhash uniqueness, and sequence continuity.
+Fourteen negative controls include the seven initial observable mutations plus
+seven fully consistent false-admission cases: integer signature flags, omitted
+program snapshots, a newly signed one-unit compute prefix, incorrect fee scalar,
+foreign constructor state, substring-only error text and a fabricated build
+claim. Additional tests cover executable cache poisoning, missing executable
+rows represented by null, code/image/report mutation, strict JSON and optimized
+startup.
 
-Accounting is recomputed independently for each donor and domain. Checks cover
-source and destination token deltas, debouncer aggregates, epoch state, rent,
-payer fees, per-mint conservation, untouched-domain isolation, full failed-step
-rollback, and final state. Seven negative controls corrupt a signature, token
-balance, debouncer aggregate, event, outcome, owner, and case count; all seven
-must be rejected.
-
-Qualified immutable inputs:
-
-- audit/build base: `aab087f32d0ec96c723a4628582cfc2410bb2cc5`
-- final upstream synchronization: `5e05222b54c4549cbec293160bb5fc65b4921792`
-- captured Relay ELF: `367f07a62e3f74d358187d175cf3228848e81a56c781a9a75b9df7fed1268563`
-- captured SPL Token ELF: `8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697`
-- captured ATA ELF: `6804554e69fd3a58caa191dc4a58f4c67223d30ca28ab8987f39fc18d2f7374d`
-- source-built candidate: `810df19bdae4af7540a844f8873bf09196cb5e42a867b77e3e007f3f1363dd92`
-- fixture identity: `eb0ee9a92bc2959245b2bbf8fafb1a4774478407c8f79cac407f15e641c53dc2`
-
-## Reproduction
-
-The builder uses the local pinned macOS arm64 platform-tools v1.44, the locked
-dependency graph, and an isolated target directory. If the pinned Cargo cache
-has not yet been populated, fetch that exact lockfile once with the same Cargo
-binary; the authenticated build itself remains offline.
+Use a supplied candidate from separately retained actual build evidence. The
+review qualification uses the independently retained earlier source build
+`810df19bdae4af7540a844f8873bf09196cb5e42a867b77e3e007f3f1363dd92`
+(747480 bytes), whose sixty recorded Relay source files match this checkout.
+Its historical Cargo log and source snapshot are separate build context. This
+suite performs no new compilation and grants no new Relay identity acceptance.
+The captured original is
+`367f07a62e3f74d358187d175cf3228848e81a56c781a9a75b9df7fed1268563`.
+The repaired finite report is retained at [results/current-qualified.json.gz](results/current-qualified.json.gz).
+Thirty focused tests include admission and mutation controls.
+The author-retained initial qualification remains historical in
+`evidence/qualification.json`; it predates the repaired v2 admission.
 
 ```sh
-sdk="$HOME/.cache/solana/v1.44/platform-tools"
-out="$HOME/.cache/pumpfun-reconstruction/donation-relay-multidonor/repro"
-
-"$sdk/rust/bin/cargo" fetch --locked \
-  --manifest-path programs/donation-relay/Cargo.toml
-python -B reconstruction/verification/donation-relay-multidonor/build_candidate.py \
-  --root "$PWD" --sdk "$sdk" --output "$out/build"
-
-uv run --offline --python 3.12 --with solders==0.27.1 python -B \
-  reconstruction/verification/donation-relay-multidonor/producer.py \
-  --root "$PWD" --candidate "$out/build/donation_relay_candidate.so" \
-  --build-receipt "$out/build/build-receipt.json" \
-  --output "$out/report.json"
-uv run --offline --python 3.12 --with solders==0.27.1 python -B \
-  reconstruction/verification/donation-relay-multidonor/verify.py \
-  --root "$PWD" --candidate "$out/build/donation_relay_candidate.so" \
-  --report "$out/report.json"
-uv run --offline --python 3.12 --with solders==0.27.1 python -B \
-  reconstruction/verification/donation-relay-multidonor/controls.py \
-  --root "$PWD" --candidate "$out/build/donation_relay_candidate.so" \
-  --report "$out/report.json" --output "$out/negative-controls.json"
-
-uv run --offline --python 3.12 --with solders==0.27.1 python -B \
-  -m unittest discover \
+candidate=/absolute/path/to/retained-source-built-relay.so
+out=/absolute/path/outside/repository/relay-multidonor
+python -B reconstruction/verification/donation-relay-multidonor/producer.py \
+  --root "$PWD" --candidate "$candidate" --output "$out/report.json"
+python -B reconstruction/verification/donation-relay-multidonor/verify.py \
+  --root "$PWD" --candidate "$candidate" --report "$out/report.json"
+python -B reconstruction/verification/donation-relay-multidonor/controls.py \
+  --root "$PWD" --candidate "$candidate" --report "$out/report.json" \
+  --output "$out/controls.json"
+python -B -m unittest discover \
   -s reconstruction/verification/donation-relay-multidonor -p 'test_*.py'
 ```
 
-Output publication is fail-closed: existing report, control, or build paths are
-never replaced. Failed/interrupted build staging directories are retained for
-recovery. No RPC or Solana cluster is contacted during execution.
+Install the pinned `solders==0.27.1` runtime first. Repeat production to a fresh
+output and compare complete report bytes for deterministic replay. Retained
+qualification reports are runtime observations, not an equivalence proof.

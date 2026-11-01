@@ -9,6 +9,7 @@ import json
 import re
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +23,27 @@ from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 from solders.transaction_metadata import FailedTransactionMetadata
 
+_SELF_SOURCE_SHA256 = globals().get("__source_sha256__")
+if _SELF_SOURCE_SHA256 is None:
+    _SELF_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(ROOT / "scripts"))
-
-import fixture
-from pump_differential_output import PumpReport
+if "_ADMISSION" in globals():
+    A = _ADMISSION
+else:
+    _path = HERE / "admission.py"
+    if _path.is_symlink():
+        raise ValueError("admission source must be regular")
+    _raw = _path.read_bytes()
+    A = types.ModuleType("_relay_multidonor_admission")
+    A.__file__ = str(_path)
+    A.__source_sha256__ = hashlib.sha256(_raw).hexdigest()
+    exec(compile(_raw, str(_path), "exec", dont_inherit=True), A.__dict__)
+fixture = globals().get("_FIXTURE") or A.source_module("fixture", HERE / "fixture.py")
+_output = A.source_module("output", ROOT / "scripts/pump_differential_output.py")
+PumpReport = _output.PumpReport
+A.LOADED[str(Path(__file__).resolve())] = _SELF_SOURCE_SHA256
 
 
 COMPUTE_RE = re.compile(r"Program \S+ consumed \d+ of \d+ compute units")
@@ -148,7 +163,7 @@ def snapshot(vm: LiteSVM, addresses: set[Pubkey]) -> dict[str, Any]:
             rows[str(address)] = None
             continue
         row = {"lamports": value.lamports, "owner": str(value.owner),
-               "executable": value.executable, "data_len": len(value.data),
+               "executable": value.executable, "rent_epoch": value.rent_epoch, "data_len": len(value.data),
                "data_sha256": fixture.sha(bytes(value.data))}
         if value.executable:
             row["data_omitted"] = True
@@ -281,10 +296,11 @@ class Pair:
         }
 
 
-def error_matches(error: str | None, expected: str | None) -> bool:
+def error_matches(error: str | None, expected: str | None, instruction_index: int = 1) -> bool:
     if expected is None:
         return error is None
-    return expected.replace(" ", "") in (error or "").replace(" ", "")
+    match = re.fullmatch(r"Custom\((\d+)\)", expected)
+    return bool(match) and error == f"TransactionErrorInstructionError(({instruction_index}, Tagged(InstructionErrorCustom({match.group(1)}))))"
 
 
 def token_total(value: fixture.Fixture, state: dict[str, Any], mint_name: str) -> int:
@@ -394,7 +410,8 @@ def run_case(name: str, original: Path, candidate: Path, token: Path, associated
         previous = {side: step[side]["after"] for side in ("original", "candidate")}
         problems.extend(f"step_{index}:differential:{field}" for field in step["mismatches"])
         problems.extend(f"step_{index}:invariant:{field}" for field in step["invariant_problems"])
-        if not error_matches(step["original"]["error"], step_spec["error"]):
+        if not error_matches(step["original"]["error"], step_spec["error"],
+                             3 if name == "atomic_rollback_invalid_third" else 1):
             problems.append(f"step_{index}:original_expected_error")
         steps.append(step)
     return {
@@ -423,6 +440,12 @@ def run_case(name: str, original: Path, candidate: Path, token: Path, associated
 
 def execute(root: Path, candidate: Path, output: Path,
             build_receipt: Path | None = None) -> bool:
+    if root.resolve() != ROOT:
+        raise ValueError("root must be this admitted source checkout")
+    if build_receipt is not None:
+        raise ValueError("source-build receipts are not authenticated by this runtime suite")
+    A.outside_repository(output)
+    admitted = A.snapshot_inputs()
     original = root / "evidence/dependencies/donation_relay/deployed.so"
     token = root / "evidence/dependencies/spl_token/deployed.so"
     associated = root / "evidence/dependencies/associated_token/deployed.so"
@@ -435,28 +458,17 @@ def execute(root: Path, candidate: Path, output: Path,
     if not candidate.is_file():
         raise SystemExit("candidate does not exist: " + str(candidate))
     sources, source_digest = source_manifest(root)
-    build: dict[str, Any] | None = None
-    build_receipt_sha256: str | None = None
-    if build_receipt is not None:
-        if not build_receipt.is_file():
-            raise SystemExit("build receipt does not exist: " + str(build_receipt))
-        try:
-            build = json.loads(build_receipt.read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            raise SystemExit(f"invalid build receipt: {error}") from error
-        if build.get("schema") != "donation-relay-candidate-build-v1" \
-                or build.get("candidate") != {
-                    "sha256": file_sha(candidate), "bytes": candidate.stat().st_size}:
-            raise SystemExit("build receipt does not authenticate candidate")
-        build_receipt_sha256 = file_sha(build_receipt)
     publisher = PumpReport(
         output, root, candidate, __file__, overwrite=False,
         extra_inputs=[HERE / "fixture.py", *[path for path, _ in pins.values()],
                       *[root / name for name in sources],
                       *([build_receipt] if build_receipt is not None else [])],
     )
-    images = {label: path.read_bytes() for label, (path, _expected) in pins.items()}
-    images["candidate"] = candidate.read_bytes()
+    images = {label: A.regular_bytes(path, root=ROOT) for label, (path, _expected) in pins.items()}
+    images["candidate"] = A.regular_bytes(candidate)
+    for label, (_path, digest) in pins.items():
+        if fixture.sha(images[label]) != digest:
+            raise ValueError("captured input changed before snapshot: " + label)
     with tempfile.TemporaryDirectory(prefix="relay-multidonor-inputs-") as directory:
         private = {label: Path(directory) / f"{label}.so" for label in images}
         for label, content in images.items():
@@ -473,7 +485,7 @@ def execute(root: Path, candidate: Path, output: Path,
                          ("name", "fixture", "initial_balances", "plan", "expected_errors")}
                         for case in cases]
     report = {
-        "schema": "donation-relay-multidonor-v1",
+        "schema": "donation-relay-multidonor-v2",
         "program": str(fixture.RELAY),
         "authority_boundary": {"production_relayer": str(fixture.RELAYER),
                                "private_key_retained": False,
@@ -482,8 +494,9 @@ def execute(root: Path, candidate: Path, output: Path,
             **{label: {"path": path.relative_to(root).as_posix(), "sha256": fixture.sha(images[label])}
                for label, (path, _expected) in pins.items()},
             "candidate": {"sha256": fixture.sha(images["candidate"]), "bytes": len(images["candidate"])},
-            "candidate_build": build,
-            "candidate_build_receipt_sha256": build_receipt_sha256,
+            "candidate_provenance": {"mode": "supplied_binary_only", "source_build_verified_by_this_suite": False},
+            "source_snapshot_context_only": True,
+            "admitted_input_sha256": admitted,
             "source_manifest_sha256": source_digest,
             "source_files": source_files,
             "package_files": package_manifest(root),
@@ -522,7 +535,13 @@ def execute(root: Path, candidate: Path, output: Path,
         ],
         "cases": cases,
     }
-    publisher.write((json.dumps(report, indent=2, sort_keys=True) + "\n").encode())
+    A.recheck_inputs(admitted)
+    if A.regular_bytes(candidate) != images["candidate"]:
+        raise ValueError("candidate changed during execution")
+    publisher.write((json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n").encode())
+    A.recheck_inputs(admitted)
+    if A.regular_bytes(candidate) != images["candidate"]:
+        raise ValueError("candidate changed during publication")
     print(json.dumps({key: report[key] for key in
                       ("case_count", "transaction_count", "individual_signature_count",
                        "classification_counts", "original_positive_cases", "strict_mismatches")},
