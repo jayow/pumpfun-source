@@ -10,6 +10,13 @@ H=Path(__file__).resolve().parent/'pump_tokenkeg_two_curve_differential.py'
 spec=importlib.util.spec_from_file_location('two_curve_fixture',H);f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 Base=f.LiteSVM
 CASE={};SENDS=[]
+def signatures_verified(tx):
+ """True only when the transaction carries signatures and all of them verify.
+
+ solders returns no results for a transaction with no signatures, and
+ ``all([])`` is true; the signature vector itself must be non-empty.
+ """
+ return bool(tx.signatures) and all(tx.verify_with_results())
 NATIVE_ALIAS=f.Pubkey.from_bytes(bytes([146])*32)
 OLD_VA,OLD_VQA,OLD_VQB=f.VA,f.VQA,f.VQB
 class ObservedVM(Base):
@@ -40,7 +47,7 @@ class ObservedVM(Base):
    a=self.get_account(key)
    before.append(dict(key=str(key),owner=str(a.owner),lamports=a.lamports,data_sha256=hashlib.sha256(a.data).hexdigest(),executable=a.executable)if a else dict(key=str(key),missing=True))
   result=super().send_transaction(tx);failed=isinstance(result,f.FailedTransactionMetadata);meta=result.meta()if failed else result
-  SENDS.append(dict(transaction_base64=base64.b64encode(bytes(tx)).decode(),signatures_verified=all(tx.verify_with_results()),before=before,metadata=json.loads(meta.to_json()),loads=list(loader.LOADS),program_loads=self.observed_loads))
+  SENDS.append(dict(transaction_base64=base64.b64encode(bytes(tx)).decode(),signatures_verified=signatures_verified(tx),before=before,metadata=json.loads(meta.to_json()),loads=list(loader.LOADS),program_loads=self.observed_loads))
   return result
 f.LiteSVM=ObservedVM
 

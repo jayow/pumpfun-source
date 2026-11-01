@@ -10,6 +10,10 @@ sys.path.insert(0,str(ROOT/'scripts'))
 import pump_amm_multi_hop_differential as h
 from pump_amm_admin_differential import Harness
 
+def require_signed(tx):
+ """Reject a transaction carrying no signatures before verifying it."""
+ assert tx.signatures and all(tx.verify_with_results())
+
 def legacy_curve(sell,mutation=None):
  def setup(vm,metas):
   h.curve_route(sell)(vm,metas)
@@ -50,7 +54,7 @@ def invoke(sell,amount,candidate=None,mutation=None,limit=1):
   return out
  before=snapshot();data=bytes(ix['discriminator'])+h.struct.pack('<QQ',amount,limit)
  tx=h.Transaction.new_signed_with_payer([h.Instruction(h.PROGRAM,data,metas)],h.PAYER.pubkey(),[h.PAYER],vm.vm.latest_blockhash())
- assert all(tx.verify_with_results())
+ require_signed(tx)
  result=vm.vm.send_transaction(tx);failed=isinstance(result,h.FailedTransactionMetadata);meta=result.meta()if failed else result;encoded=json.loads(meta.to_json())
  return {'error':str(result.err())if failed else None,'logs':meta.logs(),'events':[line for line in meta.logs()if line.startswith('Program data: ')],'inner':encoded['inner_instructions'],'return_data':encoded.get('return_data'),'before':before,'after':snapshot(),'transaction_base64':h.base64.b64encode(bytes(tx)).decode(),'program_sha256':{str(pid):hashlib.sha256(path.read_bytes()).hexdigest()for pid,path in programs},'fresh_vm':True}
 

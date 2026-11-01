@@ -32,9 +32,9 @@ for kind in ('legacy','v0-static','v0-alt','v0-alt-readonly','v0-alt-missing','v
   message=MessageV0.try_compile(PAYER.pubkey(),[ix],tables,vm.latest_blockhash())
   if kind=='v0-alt-index':message=MessageV0(message.header,message.account_keys,message.recent_blockhash,message.instructions,[MessageAddressTableLookup(table_key,b'\x01',b'')])
   tx=VersionedTransaction(message,[PAYER])
- assert all(tx.verify_with_results())
+ verified=bool(tx.signatures) and all(tx.verify_with_results());assert verified
  result=vm.send_transaction(tx);error=str(result.err()) if isinstance(result,FailedTransactionMetadata) else None;after=snapshot()
  reused=reusable.acquire_harness(binary);assert reused is h;reset=snapshot()
- rows.append({'kind':kind,'error':error,'signatures_verified':True,'recipient_before':before[str(OUTSIDER.pubkey())]['lamports'],'recipient_after':after[str(OUTSIDER.pubkey())]['lamports'],'recipient_reset':reset[str(OUTSIDER.pubkey())]['lamports'],'complete_watched_accounts_restored':reset==before})
+ rows.append({'kind':kind,'error':error,'signatures_verified':verified,'recipient_before':before[str(OUTSIDER.pubkey())]['lamports'],'recipient_after':after[str(OUTSIDER.pubkey())]['lamports'],'recipient_reset':reset[str(OUTSIDER.pubkey())]['lamports'],'complete_watched_accounts_restored':reset==before})
  print(rows[-1],flush=True)
 a.output.write_text(json.dumps({'base':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),'captured_amm_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'rows':rows},indent=2)+'\n')

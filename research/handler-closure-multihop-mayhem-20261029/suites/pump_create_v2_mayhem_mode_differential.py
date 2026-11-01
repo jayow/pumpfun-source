@@ -105,6 +105,11 @@ def _init_global_params(vm):
     return vm.send_transaction(tx)
 
 
+def require_signed(tx):
+    """Reject a transaction carrying no signatures before verifying it."""
+    assert tx.signatures and all(tx.verify_with_results())
+
+
 def run(c, pump_bin=ORIGINAL_PUMP):
     vm = LiteSVM().with_transaction_history(0)
     vm.add_program_from_file(PROGRAM, pump_bin)
@@ -171,7 +176,7 @@ def run(c, pump_bin=ORIGINAL_PUMP):
                + bytes([1 if c.get('is_mayhem_mode', True) else 0]) + bytes.fromhex(c.get('optional_args', '')))
     signers = [k for k in [USER, MINT] if k.pubkey() in {m.pubkey for m in metas if m.is_signer} | {USER.pubkey()}]
     tx = Transaction.new_signed_with_payer([set_compute_unit_limit(1400000), Instruction(PROGRAM, payload, metas)], USER.pubkey(), signers, vm.latest_blockhash())
-    assert all(tx.verify_with_results())
+    require_signed(tx)
 
     def snap():
         out = {}
