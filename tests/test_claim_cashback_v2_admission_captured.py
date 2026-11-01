@@ -105,6 +105,7 @@ class Harness:
         return int.from_bytes(bytes(account.data)[64:72], 'little') if account and len(account.data) >= 72 else 0
 
     def run(self, route, faults):
+        validate_case(route, faults)
         for key in self.stale:
             self.vm.set_account(key, Account(0, b'', base.SYSTEM))
         self.stale.clear()
@@ -192,15 +193,28 @@ def triple_cases(count=1200, seed=3522):
     return cases
 
 
+def validate_case(route, faults):
+    allowed = set(faults_of())
+    if (type(route) is not str or route not in ROUTES
+            or not isinstance(faults, (tuple, list))
+            or any(type(fault) is not str or fault not in allowed for fault in faults)):
+        raise ValueError("unsupported admission route or fault")
+
+
 def host_line(route, faults):
-    return ' '.join((route,) + faults)
+    validate_case(route, faults)
+    return ' '.join((route,) + tuple(faults))
 
 
 class ClaimCashbackV2AdmissionCapturedTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if (base.IX["name"] != "claim_cashback_v2"
+                or base.IX["discriminator"] != [122, 243, 204, 65, 94, 116, 29, 55]):
+            raise AssertionError("unexpected captured instruction selector")
         for path, digest in ELF_SHA256.items():
-            assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, path
+            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                raise AssertionError("captured ELF digest mismatch: " + str(path))
         cls.tmp = tempfile.TemporaryDirectory()
         host = Path(cls.tmp.name) / 'claim-cashback-v2-admission-host'
         subprocess.run(['rustc', '--edition=2021', '-O', '-D', 'warnings', str(HOST_SOURCE), '-o', str(host)], check=True)
@@ -242,6 +256,18 @@ class ClaimCashbackV2AdmissionCapturedTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.run_cases([('native', ())])
         self.assertEqual(answers([('native', ())]), [self.harness.run('native', ())])
+
+    def test_rejects_malformed_host_and_vm_requests(self):
+        for line in ('unrelated_route', 'native' + ' user.nonsense',
+                     'native' + ' user_volume_accumulator.owner user_volume_accumulator.nonsense', ''):
+            result = subprocess.run([str(self.host)], input=line + '\n', capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+        for route, faults in (('unrelated_route', ()), ('native', ('user.nonsense',))):
+            with self.assertRaises(ValueError):
+                host_line(route, faults)
+            with self.assertRaises(ValueError):
+                self.harness.run(route, faults)
 
     def test_cases_reach_every_stop(self):
         answers = set(self.host_answers(single_cases()))

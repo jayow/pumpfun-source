@@ -48,12 +48,36 @@ fn stop(s: Stop) -> String {
     }
 }
 
+fn valid_fault(slot: &str, kind: &str) -> bool {
+    match slot {
+        "mint" => matches!(kind, "other" | "unsigned" | "readonly" | "taken" | "funded"),
+        "mint_authority" => matches!(kind, "key"),
+        "bonding_curve" => matches!(kind, "key" | "readonly" | "taken" | "funded"),
+        "associated_bonding_curve" => matches!(kind, "key" | "readonly" | "taken" | "funded"),
+        "global" => matches!(kind, "key" | "owner" | "short" | "disc" | "trunc" | "missing"),
+        "mpl_token_metadata" => matches!(kind, "key"),
+        "metadata" => matches!(kind, "key" | "readonly" | "taken" | "funded"),
+        "user" => matches!(kind, "unsigned" | "readonly" | "poor"),
+        "system_program" => matches!(kind, "key"),
+        "token_program" => matches!(kind, "key" | "t22"),
+        "associated_token_program" => matches!(kind, "key"),
+        "rent" => matches!(kind, "key"),
+        "event_authority" => matches!(kind, "key"),
+        "program" => matches!(kind, "key" | "token"),
+        "h" => matches!(kind, "badbool" | "creator" | "name"),
+        _ => false,
+    }
+}
+
 fn answer(line: &str) -> String {
     let mut r = Request::default();
     let (mut metadata_taken, mut no_event_program) = (false, false);
     let (mut name_bytes, mut creator_is_zero) = (4, false);
-    for word in line.split_whitespace().skip(1) {
-        let (slot, kind) = word.split_once('.').unwrap();
+    let mut words = line.split_whitespace();
+    assert_eq!(words.next(), Some("create"), "unsupported operation");
+    for word in words {
+        let (slot, kind) = word.split_once('.').expect("fault must be slot.kind");
+        assert!(valid_fault(slot, kind), "unsupported fault {word}");
         match (slot, kind) {
             ("mint", "other") => r.mint_other = true,
             ("mint", "unsigned") => r.mint_unsigned = true,

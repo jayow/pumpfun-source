@@ -120,6 +120,7 @@ class Harness:
         self.stale.append(key)
 
     def run(self, route, faults):
+        validate_case(route, faults)
         for key in self.stale + list(base.ACCOUNTS[name] for name in ('mint', 'bonding_curve', 'associated_bonding_curve', 'metadata')):
             self.vm.set_account(key, Account(0, b'', base.SYSTEM))
         self.stale.clear()
@@ -221,15 +222,28 @@ def triple_cases(count=1000, seed=4192):
     return cases
 
 
+def validate_case(route, faults):
+    allowed = set(faults_of())
+    if (type(route) is not str or route not in ROUTES
+            or not isinstance(faults, (tuple, list))
+            or any(type(fault) is not str or fault not in allowed for fault in faults)):
+        raise ValueError("unsupported admission route or fault")
+
+
 def host_line(route, faults):
-    return ' '.join((route,) + faults)
+    validate_case(route, faults)
+    return ' '.join((route,) + tuple(faults))
 
 
 class CreateAdmissionCapturedTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if (base.CREATE["name"] != "create"
+                or base.CREATE["discriminator"] != [24, 30, 200, 40, 5, 28, 7, 119]):
+            raise AssertionError("unexpected captured instruction selector")
         for path, digest in ELF_SHA256.items():
-            assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, path
+            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                raise AssertionError("captured ELF digest mismatch: " + str(path))
         cls.tmp = tempfile.TemporaryDirectory()
         host = Path(cls.tmp.name) / 'create-admission-host'
         subprocess.run(['rustc', '--edition=2021', '-O', '-D', 'warnings', str(HOST_SOURCE), '-o', str(host)], check=True)
@@ -271,6 +285,18 @@ class CreateAdmissionCapturedTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.run_cases([('create', ())])
         self.assertEqual(answers([('create', ())]), [self.harness.run('create', ())])
+
+    def test_rejects_malformed_host_and_vm_requests(self):
+        for line in ('unrelated_route', 'create' + ' user.nonsense',
+                     'create' + ' global.owner global.nonsense', ''):
+            result = subprocess.run([str(self.host)], input=line + '\n', capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+        for route, faults in (('unrelated_route', ()), ('create', ('user.nonsense',))):
+            with self.assertRaises(ValueError):
+                host_line(route, faults)
+            with self.assertRaises(ValueError):
+                self.harness.run(route, faults)
 
     def test_cases_reach_every_stop(self):
         answers = set(self.host_answers(single_cases()))

@@ -32,16 +32,38 @@ fn stop(s: Stop) -> String {
     }
 }
 
+fn valid_fault(slot: &str, kind: &str) -> bool {
+    match slot {
+        "user" => matches!(kind, "readonly"),
+        "user_volume_accumulator" => matches!(kind, "key" | "readonly" | "owner" | "short" | "disc" | "trunc" | "missing"),
+        "quote_mint" => matches!(kind, "key" | "short" | "missing"),
+        "quote_token_program" => matches!(kind, "key" | "program"),
+        "associated_token_program" => matches!(kind, "key"),
+        "associated_user_volume_accumulator" => matches!(kind, "key" | "readonly" | "owner" | "short" | "mintdata" | "ownerdata" | "frozen" | "missing"),
+        "associated_quote_user" => matches!(kind, "key" | "readonly" | "owner" | "short" | "mintdata" | "ownerdata" | "frozen" | "missing"),
+        "system_program" => matches!(kind, "key"),
+        "event_authority" => matches!(kind, "key"),
+        "program" => matches!(kind, "key" | "token"),
+        "h" => matches!(kind, "empty"),
+        _ => false,
+    }
+}
+
 fn answer(line: &str) -> String {
     let mut words = line.split_whitespace();
-    let token = words.next().unwrap() == "token";
+    let token = match words.next() {
+        Some("native") => false,
+        Some("token") => true,
+        other => panic!("unsupported route {other:?}"),
+    };
     let mut r = Request::default();
     let mut mint = MintState::default();
     let mut source = TokenState::default();
     let mut destination = TokenState::default();
     let mut empty = false;
     for word in words {
-        let (slot, kind) = word.split_once('.').unwrap();
+        let (slot, kind) = word.split_once('.').expect("fault must be slot.kind");
+        assert!(valid_fault(slot, kind), "unsupported fault {word}");
         match (slot, kind) {
             ("user", _) => r.user_read_only = true,
             ("user_volume_accumulator", "key") => r.accumulator.wrong_address = true,
