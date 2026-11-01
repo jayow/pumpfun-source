@@ -1,9 +1,13 @@
 # Admin CTO differential-fuzzing gap analysis
 
-Final integrated base: `53ec7fb538c1bce0571eab731ab925d8530c40fa`.
+Authored lane base: `53ec7fb538c1bce0571eab731ab925d8530c40fa`.
 The initial audit was performed at `638fce2a3470d2505522f7e73e416d56daef86c5`;
 the lane was rebased and fully requalified after upstream Admin CTO and harness
 changes landed.
+The independent v2 admission repair is recorded in `QUALIFICATION.md` and
+retains this initial coverage rationale. It adds strict fixture grammar,
+case-bound signed receipts, exact corpus/artifact membership, source-only
+loading, and explicit provenance-only admission for compact reports.
 Target: Pump Main `admin_cto::execute`, original offset `0x22a10`, original
 size 27,400 bytes.
 

@@ -1,4 +1,54 @@
-# Qualification record — seed 20261101
+# Independent v2 admission qualification — 2026-11-01
+
+The repaired implementation at `5da27f72956ff39e715cf5ed40f04764cac163ff`
+was qualified separately from the author's historical v1 record below. The
+original and candidate images retain the SHA-256 identities listed there;
+this tooling review reused the already qualified candidate bytes and did not
+perform or claim a new compiler build.
+
+Two fresh detailed campaigns used seed `20261101`, indices 0–15, and corpus
+SHA-256 `82ab889b9dfa79f4243e53f5539ead984264079c44daca1245f364e4cb8f5e1f`.
+Both original-vs-original and original-vs-candidate reports observed 15 equal
+cases, one independently admitted unsupported fixture, zero behavioral
+differences, and zero infrastructure failures. Each executed 30 signed
+transactions per image, including one all-success sequence. All three negative
+controls were detected. Each report was independently read and all 16 cases
+were reexecuted with no failures or warnings. The unsupported fixture is
+excluded from matching execution counts. No real counterexample was found;
+reducer witnesses and local-neighborhood checks were qualified with finite
+positive and adversarial regression cases.
+
+The v2 summary SHA-256 values are:
+
+- control: `e6abf6b01de65f5236ef5b0fc5c752c31d187d281b4844a7d7303e97280dfd58`;
+- candidate: `7c9876e0b6f02a59fd125907e0636654c45f52d03a7353d8c7d68724b890d026`.
+
+The counted CI command passed 69 tests with zero skips. Regressions cover
+strict fixture types, fully resealed signed unrelated messages, integer
+signature flags, omitted/foreign state, empty runs, fabricated unsupported
+exclusions, zero-case corpora, false aggregates, extra manifest members,
+duplicate JSON keys, links, and input/report mutation. An independent model
+check retained byte-identical generated corpora for 640 cases across five
+seeds and rejected 20 previously admitted malformed cases.
+
+Actual producer-generation and reader CLIs also passed under normal Python,
+`-O`, and `-OO` with executable timestamp caches planted for the lifecycle and
+comparison helper. Standard-loader controls first proved those six caches
+executable; the source-only CLIs left every execution marker absent and
+admitted all 16 retained candidate case results. These cache checks performed
+no additional program executions.
+
+Detailed reports and proof logs are retained under the local pass111 artifact
+directory `tools/4056/{control16,candidate16}`. They bind ten declared tool/data
+inputs, all captured dependency images, the exact semantic artifact census,
+canonical case/message/constructor state, and pre/post input bytes. These are
+finite synthetic observations, not whole-program equivalence or increased
+bytecode-completion evidence.
+
+# Author's historical v1 qualification record — seed 20261101
+
+The record below is retained as authored. Its v1 reader and reported 64-case
+campaigns are not substituted for the independent v2 qualification above.
 
 The final bounded campaign was produced from implementation commit
 `d84ebbe0cca77febd97187215cd6924b39053756` on upstream base
