@@ -100,7 +100,10 @@ fn main() {
             "buy" => Op::Buy { amount: n(1), max_sol_cost: n(2), trailing: hex(f[3]) },
             "exact" => Op::ExactSolIn { spendable: n(1), min_tokens: n(2), trailing: hex(f[3]) },
             "sell" => Op::Sell { amount: n(1), min_sol_output: n(2) },
-            _ => Op::Collect,
+            // A catchall read any token -- a typo, a new operation, a column
+            // shifted into this one -- as `collect` and answered with real state.
+            "collect" => Op::Collect,
+            other => panic!("unknown op {other}"),
         };
         let (setup, state) = walk.as_mut().unwrap();
         let (outcome, trade) = match step(state, setup, &op) {
