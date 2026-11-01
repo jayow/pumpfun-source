@@ -205,12 +205,13 @@ class ExecutionTests(unittest.TestCase):
             for index, plan in enumerate(lifecycle.plans()):
                 harness = lifecycle.fixture_only(lifecycle.CAPTURED["original"], index, plan)
                 baseline = harness.snapshot("original")
-                for number, step in enumerate(plan["steps"]):
-                    name, instructions, signers, operation = lifecycle.plan_step(harness, step, number)
-                    self.assertTrue(name and instructions and operation)
-                    self.assertIn(lifecycle.FEE_PAYER.pubkey(), {pair.pubkey() for pair in signers})
-                    self.assertNotIn(harness.pool.pool, {pair.pubkey() for pair in signers})
-                    self.assertEqual(harness.snapshot("original"), baseline)
+                with mock.patch.object(lifecycle.LiteSVM, "set_account", side_effect=AssertionError("pure instruction construction")):
+                    for number, step in enumerate(plan["steps"]):
+                        name, instructions, signers, operation = lifecycle.plan_step(harness, step, number)
+                        self.assertTrue(name and instructions and operation)
+                        self.assertIn(lifecycle.FEE_PAYER.pubkey(), {pair.pubkey() for pair in signers})
+                        self.assertNotIn(harness.pool.pool, {pair.pubkey() for pair in signers})
+                        self.assertEqual(harness.snapshot("original"), baseline)
 
     def test_existing_and_dangling_outputs_are_refused_before_running(self):
         from unittest import mock

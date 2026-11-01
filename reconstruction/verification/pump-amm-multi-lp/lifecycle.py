@@ -307,7 +307,8 @@ class DualHarness:
         self._seed()
         self.tracked.update((AMM, TOKEN, TOKEN22, ATA, FEES, SYSTEM))
         for provider in (PROVIDER_A, PROVIDER_B):
-            self.tracked.add(Pubkey.find_program_address([b"user_volume_accumulator", bytes(provider.pubkey())], AMM)[0])
+            volume = Pubkey.find_program_address([b"user_volume_accumulator", bytes(provider.pubkey())], AMM)[0]
+            self.put(volume, Account(0, b"", SYSTEM))
 
     @staticmethod
     def _vm(image: Path, case_index: int, images=None) -> LiteSVM:
@@ -499,10 +500,6 @@ class DualHarness:
         accounts = self.pool.provider_accounts(provider)
         volume = Pubkey.find_program_address(
             [b"user_volume_accumulator", bytes(provider.pubkey())], AMM)[0]
-        self.tracked.add(volume)
-        for vm in self.vms.values():
-            if vm.get_account(volume) is None:
-                vm.set_account(volume, Account(0, b"", SYSTEM))
         keys = [self.pool.pool, provider.pubkey(), CONFIG, self.pool.base, self.pool.quote,
                 accounts["base"], accounts["quote"], self.pool.vault_base, self.pool.vault_quote,
                 self.pool.base_program, self.pool.quote_program, SYSTEM, volume, FEE_CONFIG,
